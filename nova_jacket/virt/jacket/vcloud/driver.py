@@ -40,6 +40,9 @@ from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
 from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
 
+HYPER_SERVICE_PORT = 7127
+
+
 vcloudapi_opts = [
 
     cfg.StrOpt('vcloud_node_name',
@@ -180,25 +183,30 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     def _update_vm_task_state(self, instance, task_state):
         instance.task_state = task_state
         instance.save()
-
+        
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
-        LOG.info('begin time of vcloud create vm is %s' %
-                  (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
-
+        """Create VM instance."""
+        
+        LOG.debug(_("image meta is:%s") % image_meta)
+        LOG.debug(_("instance is:%s") % instance)
+        LOG.debug(_("network_info is %s") % network_info)
+        LOG.debug(_("block_device_info is %s") % block_device_info)
+        LOG.info('begin time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
-
+    
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
             is_hybrid_vm = True
-
+    
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
-
+    
         vapp_name = self._get_vcloud_vapp_name(instance)
-
+    
         # 0.get vorg, user name,password vdc  from configuration file (only one
         # org)
-
+    
         # 1.1 get image id, vm info ,flavor info
         # image_uuid = instance.image_ref
         if 'id' in image_meta:
@@ -207,27 +215,33 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             # create from volume
             image_uuid = image_meta['properties']['image_id']
-
+    
         #NOTE(nkapotoxin): create vapp with vapptemplate
         network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
         network_configs = self._vcloud_client.get_network_configs(network_names)
-
+    
         # create vapp
         if CONF.vcloud.use_link_clone or is_hybrid_vm:
             vapp = self._vcloud_client.create_vapp(vapp_name, image_uuid , network_configs)
         else:
             vapp = self._vcloud_client.create_vapp(vapp_name,image_uuid , network_configs,
                                                    root_gb=instance.get_flavor().root_gb)
-
+    
         # generate the network_connection
         network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
-
+    
         # update network
         self._vcloud_client.update_vms_connections(vapp, network_connections)
-
+    
         # update vm specification
         self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
         self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
+    
+        rabbit_host = CONF.rabbit_host
+        if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
+            rabbit_host = CONF.rabbit_hosts[0]
+        if ':' in rabbit_host:
+            rabbit_host = rabbit_host[0:rabbit_host.find(':')]
         
         if not is_hybrid_vm:
             this_conversion_dir = '%s/%s' % (CONF.vcloud.vcloud_conversion_dir, 
@@ -235,11 +249,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             fileutils.ensure_tree(this_conversion_dir)
             os.chdir(this_conversion_dir)
             #0: create metadata iso and upload to vcloud
-            rabbit_host = CONF.rabbit_host
-            if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
-                rabbit_host = CONF.rabbit_hosts[0]
-            if ':' in rabbit_host:
-                rabbit_host = rabbit_host[0:rabbit_host.find(':')]
             iso_file = common_tools.create_user_data_iso(
                 "userdata.iso",
                 {"rabbit_userid": CONF.rabbit_userid,
@@ -260,24 +269,25 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             self._vcloud_client.create_volume(instance.uuid, instance.get_flavor().disk)
             disk_ref = self._vcloud_client.get_disk_ref(instance.uuid)
             self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
-
-            #to do...
-
+    
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
-
+    
         if is_hybrid_vm:
             base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
-            instance.meta['base_ip'] = base_ip
-            instance.meta['is_hybrid_vm'] = true
+            instance.metadata['base_ip'] = base_ip
+            instance.metadata['is_hybrid_vm'] = True
             instance.save()
-            
-        LOG.info('end time of vcloud create vm is %s' %
-                  (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
-
+            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
+            self._client.create_container(image_meta.get('name', ''))
+            self._client.start(network_info=network_info, block_device_info=block_device_info)
+    
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
 
+        LOG.info('end time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        
     @staticmethod
     def _binding_host(context, network_info, host_id):
         neutron = neutronv2.get_client(context, admin=True)
@@ -392,16 +402,26 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                block_device_info=None, bad_volumes_callback=None):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
-        vapp_name = self._get_vcloud_vapp_name(instance)
+        if not instance.metadata.get('is_hybrid_vm', False):
+            vapp_name = self._get_vcloud_vapp_name(instance)
 
-        try:
-            self._vcloud_client.reboot_vapp(vapp_name)
-        except Exception as e:
-            LOG.error('reboot instance %s failed, %s' % (vapp_name, e))
+            try:
+                self._vcloud_client.reboot_vapp(vapp_name)
+            except Exception as e:
+                LOG.error('reboot instance %s failed, %s' % (vapp_name, e))
+         else:
+            base_ip = instance.metadata.get('base_ip', None)
+            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client.restart(network_info=network_info, block_device_info=block_device_info)
 
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
+        if instance.metadata.get('is_hybrid_vm', False):  
+            base_ip = instance.metadata.get('base_ip', None)
+            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client.stop()
+
         vapp_name = self._get_vcloud_vapp_name(instance)
         try:
             self._vcloud_client.power_off_vapp(vapp_name)
@@ -411,6 +431,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     def power_on(self, context, instance, network_info, block_device_info):
         vapp_name = self._get_vcloud_vapp_name(instance)
         self._vcloud_client.power_on_vapp(vapp_name)
+        
+        if instance.metadata.get('is_hybrid_vm', False): 
+            base_ip = instance.metadata.get('base_ip', None)
+            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client.start(network_info = network_info, block_device_info = block_device_info)
 
     def _do_destroy_vm(self, context, instance, network_info, block_device_info=None,
                        destroy_disks=True, migrate_data=None):
