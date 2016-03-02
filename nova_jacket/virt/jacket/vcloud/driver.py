@@ -211,12 +211,14 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 vapp_name = self._get_vcloud_vapp_name(instance)
                 vapp = self._vcloud_client.create_vapp(vapp_name, conf.vcloud.image_uuid, network_configs)
                 
+                # power on it
+                self._vcloud_client.power_on_vapp(vapp_name)
+
+                #to do
+
                 for volume_id in volume_ids:
                     disk_ref = self._vcloud_client.get_disk_ref(volume_id)
                     self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
-
-                # power on it
-                self._vcloud_client.power_on_vapp(vapp_name)
             
                 base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
                 instance.metadata['base_ip'] = base_ip
@@ -224,7 +226,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 instance.save()
                 self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
                 self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
-                self._client.create_container(image_meta.get('name', ''))
+                   
+                self._client.create_container(root_volume.metadata.get('image_name', ''))
                 self._client.start(network_info=network_info, block_device_info=block_device_info)
             
                 # update port bind host
