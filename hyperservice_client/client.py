@@ -12,6 +12,7 @@ from .utils import utils
 
 class Client(
     requests.Session,
+    api.VersionApiMixin,
     api.ContainerApiMixin,
     api.VolumeApiMixin,
     api.NetworkApiMixin,
@@ -24,7 +25,6 @@ class Client(
                 'The base_url argument must be provided.'
             )
 
-        self.base_url = base_url
         self.timeout = timeout
         base_url = utils.parse_host(base_url)
         self.base_url = base_url
@@ -76,6 +76,7 @@ class Client(
             )
         else:
             return '{0}{1}'.format(self.base_url, pathfmt.format(*args))
+
 
     def _raise_for_status(self, response, explanation=None):
         """Raises stored :class:`APIError`, if one occurred."""
