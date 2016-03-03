@@ -581,8 +581,7 @@ class AwsEc2VolumeDriver(driver.VolumeDriver):
                               
             except Exception as e:
                 raise e
-        else:
-
+        elif container_format == 'hypervm':
             # 0.get provider_image,
             image_uuid = self._get_image_id_from_meta(image_meta)
             provider_image = self._get_provider_image(image_meta)
@@ -594,8 +593,8 @@ class AwsEc2VolumeDriver(driver.VolumeDriver):
             size = volume.get('size')
             name = volume.get('display_name')
             provider_size = self._get_provider_node_size('m1.tiny')
-            tmp_hypervm_volume = self.adpter.create_volume(size, name)
-            provider_snap = self.adpter.create_volume_snapshot(tmp_hypervm_volume)
+            provider_tmp_volume = self.adpter.create_volume(size, name)
+            provider_snap = self.adpter.create_volume_snapshot(provider_tmp_volume)
             self._wait_for_snapshot_completed(list(provider_snap.id))
             hypervm_bdm = {'DeviceName': '/dev/sdz',
                            'Ebs': {'SnapshotId': provider_snap.id,
@@ -637,7 +636,7 @@ class AwsEc2VolumeDriver(driver.VolumeDriver):
             provider_bdm_list = provider_node.extra.get('block_device_mapping')
             provider_volume_id = provider_bdm_list[0].get('ebs').get('volume_id')
             provider_volume = self.adpter.list_volumes(ex_volume_ids=[provider_volume_id])
-            self.adpter.destroy_volume(tmp_hypervm_volume)
+            self.adpter.destroy_volume(provider_tmp_volume)
             # 7.2 create docker app
             base_ip = provider_node.private_ips[0]
             self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
