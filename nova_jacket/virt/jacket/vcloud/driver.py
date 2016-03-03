@@ -199,47 +199,54 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug(_("block_device_info is %s") % block_device_info)
         LOG.info('begin time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
         
-        bdms = block_device_info.get('block_device_mapping',[])
-        if not instance.image_ref and len(bdms)>0:
-            volume_ids = self._get_volume_ids_from_bdms(bdms)
-            root_volume_id = volume_ids[0]
-            root_volume = self.cinder_api.get(context, root_volume_id)
-
-            if root_volume.metadata.get("is_hybrid_vm", False):
-                self._binding_host(context, network_info, instance.uuid)
-    
-                vapp_name = self._get_vcloud_vapp_name(instance)
-                vapp = self._vcloud_client.create_vapp(vapp_name, conf.vcloud.image_uuid, network_configs)
-                
-                for volume_id in volume_ids:
-                    disk_ref = self._vcloud_client.get_disk_ref(volume_id)
-                    self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
-
-                # power on it
-                self._vcloud_client.power_on_vapp(vapp_name)
-            
-                base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
-                instance.metadata['base_ip'] = base_ip
-                instance.metadata['is_hybrid_vm'] = True
-                instance.save()
-                self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
-                self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
-                self._client.create_container(image_meta.get('name', ''))
-                self._client.start(network_info=network_info, block_device_info=block_device_info)
-            
-                # update port bind host
-                self._binding_host(context, network_info, instance.uuid)   
-                            
-            else:
-                LOG.info("..........................")
-                
+        if not instance.image_ref:
+            self._spawn_from_volume(context, instance, image_meta, injected_files,
+                                    admin_password, network_info, block_device_info)                
         else:
             self._spawn_from_image(context, instance, image_meta, injected_files,
                                     admin_password, network_info, block_device_info)
         LOG.info('end time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
-       
+
+    def _spawn_from_volume(self, context, instance, image_meta, injected_files,
+              admin_password, network_info=None, block_device_info=None):
+        
+        bdms = block_device_info.get('block_device_mapping',[])
+        volume_ids = self._get_volume_ids_from_bdms(bdms)
+        root_volume_id = volume_ids[0]
+        root_volume = self.cinder_api.get(context, root_volume_id)
+
+        if root_volume.metadata.get("is_hybrid_vm", False):
+            self._binding_host(context, network_info, instance.uuid)
+
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            vapp = self._vcloud_client.create_vapp(vapp_name, conf.vcloud.image_uuid, network_configs)
+            
+            # power on it
+            self._vcloud_client.power_on_vapp(vapp_name)
+
+            #to do
+
+            for volume_id in volume_ids:
+                disk_ref = self._vcloud_client.get_disk_ref(volume_id)
+                self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
+        
+            base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
+            instance.metadata['base_ip'] = base_ip
+            instance.metadata['is_hybrid_vm'] = True
+            instance.save()
+            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
+               
+            self._client.create_container(root_volume.metadata.get('image_name', ''))
+            self._client.start(network_info=network_info, block_device_info=block_device_info)
+        
+            # update port bind host
+            self._binding_host(context, network_info, instance.uuid)   
+                        
+        else:
+            LOG.info("boot from volume for normal vm not supported!")              
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):      
+              admin_password, network_info=None, block_device_info=None):    
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
     
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
