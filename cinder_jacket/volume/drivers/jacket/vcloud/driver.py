@@ -691,7 +691,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             
             base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
 
-            self._client = Client('http://%s' % base_ip + ':%s' % HYPER_SERVICE_PORT)
+            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
             self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
             self._client.create_container(image_meta.get('name', ''))
 
