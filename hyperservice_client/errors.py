@@ -36,7 +36,7 @@ class APIError(requests.exceptions.HTTPError):
         return 500 <= self.response.status_code < 600
 
 
-class HyperVMException(Exception):
+class HyperServiceException(Exception):
     pass
 
 
@@ -44,17 +44,21 @@ class NotFound(APIError):
     pass
 
 
-class InvalidBaseUrl(HyperVMException):
+class InvalidBaseUrl(HyperServiceException):
     pass
 
 
-class InvalidConfigFile(HyperVMException):
+class InvalidHost(HyperServiceException):
     pass
 
 
-class DeprecatedMethod(HyperVMException):
+class InvalidConfigFile(HyperServiceException):
     pass
 
 
-class NullResource(HyperVMException, ValueError):
+class DeprecatedMethod(HyperServiceException):
+    pass
+
+
+class NullResource(HyperServiceException, ValueError):
     pass

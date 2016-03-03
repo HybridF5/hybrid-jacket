@@ -16,17 +16,17 @@ class Client(
     api.ContainerApiMixin,
     api.VolumeApiMixin,
     api.NetworkApiMixin,
-    api.ServiceConfigApiMixin):
-    def __init__(self, base_url=None, version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS):
+    api.PersonalityApiMixin):
+    def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS):
         super(Client, self).__init__()
 
-        if not base_url:
-            raise errors.InvalidBaseUrl(
-                'The base_url argument must be provided.'
+        if not host_ip:
+            raise errors.InvalidHost(
+                'The host argument must be provided.'
             )
 
         self.timeout = timeout
-        base_url = utils.parse_host(base_url)
+        base_url = utils.parse_host(host_ip, port, scheme)
         self.base_url = base_url
 
         # version detection needs to be after unix adapter mounting
@@ -35,7 +35,7 @@ class Client(
         elif isinstance(version, six.string_types):
             self._version = version
         else:
-            raise errors.HyperVMException(
+            raise errors.HyperServiceException(
                 'Version parameter must be a string or None. Found {0}'.format(
                     type(version).__name__
                 )
