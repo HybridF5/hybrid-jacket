@@ -231,7 +231,7 @@ class VCloudClient(object):
         return referenced_file_url
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._vca, "add_disk", self._vdc, disk_name, disk_size * 1024)
+        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, disk_size*1024*1024*1024)
         if result:
             self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
             LOG.info('Created volume : %s', disk_name)

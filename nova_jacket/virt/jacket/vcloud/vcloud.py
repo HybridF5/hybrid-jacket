@@ -513,7 +513,6 @@ class VCA(sdk_vca):
                 excep_msg = "Get_media failed, response:%s" % (response)
                 raise exceptions.VCloudDriverException(excep_msg)
 
-
     def get_network_ref(self, vdc_name, network_name):
         vdc = self.get_vdc(vdc_name)
         if not vdc:

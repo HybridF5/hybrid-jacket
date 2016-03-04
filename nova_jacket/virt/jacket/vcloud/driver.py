@@ -39,6 +39,7 @@ from nova.virt.jacket.vcloud.vcloud import VCLOUD_STATUS
 from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
 from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
+from hyperserviceclient.client import Client
 
 vcloudapi_opts = [
 
@@ -321,13 +322,17 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
             self._vcloud_client.create_volume(instance.uuid, instance.get_flavor().root_gb)
-            disk_ref = self._vcloud_client.get_disk_ref(instance.uuid)
-            self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
+            result, disk_ref = self._vcloud_client.get_disk_ref(instance.uuid)
+            if result:
+                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+            else:
+                LOG.error(_('Unable to find volume %s to instance'),instance.uuid)
     
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
     
         if is_hybrid_vm:
+            
             base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
             instance.metadata['base_ip'] = base_ip
             instance.metadata['is_hybrid_vm'] = True
@@ -746,3 +751,23 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug("unplug_vifs")
         for vif in network_info:
             self.hyper_agent_api.unplug(instance.uuid, vif)
+
+    def _wait_hybrid_server_up(self, max_retry_count=-1, inc_sleep_time=10,
+                 max_sleep_time=60, exceptions=()):
+        """Configure the retry object using the input params.
+
+        :param max_retry_count: maximum number of times the given function must
+                                be retried when one of the input 'exceptions'
+                                is caught. When set to -1, it will be retried
+                                indefinitely until an exception is thrown
+                                and the caught exception is not in param
+                                exceptions.
+        :param inc_sleep_time: incremental time in seconds for sleep time
+                               between retries
+        :param max_sleep_time: max sleep time in seconds beyond which the sleep
+                               time will not be incremented using param
+                               inc_sleep_time. On reaching this threshold,
+                               max_sleep_time will be used as the sleep time.
+        :param exceptions: suggested exceptions for which the function must be
+                           retried
+        """
