@@ -247,7 +247,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             LOG.info("boot from volume for normal vm not supported!")              
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):    
+              admin_password, network_info=None, block_device_info=None):
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
     
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
@@ -320,7 +320,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             # 7. clean up
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
-            self._vcloud_client.create_volume(instance.uuid, instance.get_flavor().disk)
+            self._vcloud_client.create_volume(instance.uuid, instance.get_flavor().root_gb)
             disk_ref = self._vcloud_client.get_disk_ref(instance.uuid)
             self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
     
@@ -462,7 +462,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 self._vcloud_client.reboot_vapp(vapp_name)
             except Exception as e:
                 LOG.error('reboot instance %s failed, %s' % (vapp_name, e))
-         else:
+        else:
             base_ip = instance.metadata.get('base_ip', None)
             self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
             self._client.restart(network_info=network_info, block_device_info=block_device_info)

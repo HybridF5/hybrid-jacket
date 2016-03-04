@@ -2,6 +2,6 @@
 :mod:`hybrid` -- Hybrid vcloud nova support.
 """
 
-from nova.virt.hybrid.vcloud import driver
+from nova.virt.jacket.vcloud import driver
 
 VCloudDriver = driver.VCloudDriver
