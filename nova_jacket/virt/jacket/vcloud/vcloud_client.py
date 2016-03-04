@@ -10,7 +10,6 @@ from nova.virt.jacket.vcloud.vcloud import VCloudAPISession
 from nova.virt.jacket.vcloud.vcloud import exceptions
 from oslo.config import cfg
 from setuptools.command.egg_info import overwrite_arg
-from pyvcloud.schema.vcd.v1_5.schemas.vcloud import taskType
 
 
 LOG = logging.getLogger(__name__)
@@ -163,6 +162,22 @@ class VCloudClient(object):
 
         return _power_on(vapp_name)
 
+    def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
+        result, task = self._session.invoke_api(self._session.vca,
+                                                "create_vapp",
+                                                self._session._vdc, vapp_name,
+                                                template_name, network_configs=network_configs, root_gb=root_gb)
+
+        # check the task is success or not
+        if not result:
+            raise exceptions.VCloudDriverException(
+                "Create_vapp error, task:" +
+                task)
+        self._session.wait_for_task(task)
+        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self._session._vdc)
+
+        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)        
+
     def delete_vapp(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
         task = self._invoke_vapp_api(the_vapp, "delete")
@@ -216,7 +231,7 @@ class VCloudClient(object):
         return referenced_file_url
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._vca, "add_disk", self._vdc, disk_name, disk_size)
+        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, disk_size*1024*1024*1024)
         if result:
             self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
             LOG.info('Created volume : %s', disk_name)
@@ -380,21 +395,4 @@ class VCloudClient(object):
                 task)
 
         self._session.wait_for_task(task)
-
-
-    def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
-        result, task = self._session.invoke_api(self._session.vca,
-                                                "create_vapp",
-                                                self._session._vdc, vapp_name,
-                                                template_name, network_configs=network_configs, root_gb=root_gb)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Create_vapp error, task:" +
-                task)
-        self._session.wait_for_task(task)
-        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self._session._vdc)
-
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
        
