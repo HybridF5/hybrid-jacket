@@ -124,7 +124,13 @@ vcloudapi_opts = [
     cfg.StrOpt('tunnel_cidr',
                help='The tunnel cidr of provider network.'),
     cfg.StrOpt('route_gw',
-               help='The route gw of the provider network.')
+               help='The route gw of the provider network.'),
+    cfg.StrOpt('dst_path',
+               default = '/home/neutron_agent_conf.txt',
+           help='The config location for hybrid vm.'),
+    cfg.StrOpt('hybrid_service_port',
+                default = '7127',
+       help='The route gw of the provider network.')           
 ]
 
 status_dict_vapp_to_instance = {
