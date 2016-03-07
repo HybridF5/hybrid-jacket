@@ -40,6 +40,7 @@ from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
 from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
 from hyperserviceclient.client import Client
+from hyperserviceclient import errors
 
 vcloudapi_opts = [
 
@@ -159,7 +160,34 @@ LOG = logging.getLogger(__name__)
 
 
 IMAGE_API = image.API()
+  
+def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=60, exceptions=()):
+    def handle_func(func):
+        def handle_args(*args, **kwargs):
+            retry_count = 0
+            sleep_time = 0
+            def _sleep(retry_count, sleep_time):
+                retry_count += 1
+                if max_retry_count == -1 or retry_count < max_retry_count:
+                    sleep_time += inc_sleep_time
+                    if sleep_time > max_sleep_time:
+                        sleep_time = max_sleep_time
 
+                    time.sleep(sleep_time)
+                    return retry_count, sleep_time
+                else:
+                    return retry_count, sleep_time
+            while (max_retry_count == -1 or retry_count < max_retry_count):
+                try:
+                    result = func(*args, **kwargs)
+                    if not result:
+                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                    else:
+                        return result
+                except exceptions:
+                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
+        return handle_args
+    return handle_func
 
 class VCloudDriver(fake_driver.FakeNovaDriver):
     """The VCloud host connection object."""
@@ -177,6 +205,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
         self.hyper_agent_api = hyper_agent_api.HyperAgentAPI()
         super(VCloudDriver, self).__init__(virtapi)
+
 
     def _update_vm_task_state(self, instance, task_state):
         instance.task_state = task_state
@@ -199,7 +228,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         
         if not instance.image_ref:
             self._spawn_from_volume(context, instance, image_meta, injected_files,
-                                    admin_password, network_info, block_device_info)                
+                                    admin_password, network_info, block_device_info)
         else:
             self._spawn_from_image(context, instance, image_meta, injected_files,
                                     admin_password, network_info, block_device_info)
@@ -232,11 +261,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 disk_ref = self._vcloud_client.get_disk_ref(volume_id)
                 self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
         
-            base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
-            instance.metadata['base_ip'] = base_ip
+            vapp_ip = self.get_vapp_ip(vapp_name)
+            instance.metadata['vapp_ip'] = vapp_ip
             instance.metadata['is_hybrid_vm'] = True
             instance.save()
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
+            self._client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             file_data = '''rabbit_userid = %s\nrabbit_password = %s\nrabbit_host = %s''' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
             self._client.inject_file(CONF.vcloud.dst_path, file_data = file_data)               
             self._client.create_container(root_volume.metadata.get('image_name', ''))
@@ -249,8 +278,19 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             LOG.info("boot from volume for normal vm not supported!")              
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
+
+        disk_refs = self._vcloud_client._invoke_api('get_diskRefs',
+                                     self._vcloud_client._get_vcloud_vdc())
+        #test
+        print '---------------------------------------------------------------------------------------------'
+        print '---------------------------------------------------------------------------------------------'
+        for disk_ref in disk_refs:
+            print vars(disk_ref)
+        print '---------------------------------------------------------------------------------------------'
+        print '---------------------------------------------------------------------------------------------'
+        #self._vcloud_client.delete_volume("")
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
-    
+
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
             is_hybrid_vm = True
     
@@ -327,24 +367,26 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
             else:
                 LOG.error(_('Unable to find volume %s to instance'),instance.uuid)
-    
+
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
     
         if is_hybrid_vm:
-            
-            base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
-            instance.metadata['base_ip'] = base_ip
+            vapp_ip = self.get_vapp_ip(vapp_name)
+            instance.metadata['vapp_ip'] = vapp_ip
             instance.metadata['is_hybrid_vm'] = True
             instance.save()
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
-            file_data = '''rabbit_userid = %s\nrabbit_password = %s\nrabbit_host = %s''' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
-            self._client.inject_file(CONF.vcloud.dst_path, file_data = file_data) 
-            self._client.create_container(image_meta.get('name', ''))
-            self._client.start_container(network_info=network_info, block_device_info=block_device_info)
+
+            port = CONF.vcloud.hybrid_service_port
+            client = Client(vapp_ip, port = port)
+            file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
+            file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+            client.inject_file(CONF.vcloud.dst_path, file_data = file_data) 
+            client.create_container(image_meta.get('name', ''))
+            client.start_container(network_info=network_info, block_device_info=block_device_info)
     
         # update port bind host
-        self._binding_host(context, network_info, instance.uuid)        
+        self._binding_host(context, network_info, instance.uuid)
         
     @staticmethod
     def _binding_host(context, network_info, host_id):
@@ -468,17 +510,17 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             except Exception as e:
                 LOG.error('reboot instance %s failed, %s' % (vapp_name, e))
         else:
-            base_ip = instance.metadata.get('base_ip', None)
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
-            self._client.restart(network_info=network_info, block_device_info=block_device_info)
+            vapp_ip = instance.metadata.get('vapp_ip', None)
+            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            client.restart(network_info=network_info, block_device_info=block_device_info)
 
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
         if instance.metadata.get('is_hybrid_vm', False):  
-            base_ip = instance.metadata.get('base_ip', None)
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
-            self._client.stop_container()
+            vapp_ip = instance.metadata.get('vapp_ip', None)
+            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            client.stop_container()
 
         vapp_name = self._get_vcloud_vapp_name(instance)
         try:
@@ -491,9 +533,9 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         self._vcloud_client.power_on_vapp(vapp_name)
         
         if instance.metadata.get('is_hybrid_vm', False): 
-            base_ip = instance.metadata.get('base_ip', None)
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
-            self._client.start_container(network_info = network_info, block_device_info = block_device_info)
+            vapp_ip = instance.metadata.get('vapp_ip', None)
+            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            client.start_container(network_info = network_info, block_device_info = block_device_info)
 
     def _do_destroy_vm(self, context, instance, network_info, block_device_info=None,
                        destroy_disks=True, migrate_data=None):
@@ -559,6 +601,10 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             return None
         else:
             return agent['agents'][0]['configurations']['tunneling_ip']
+
+    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound))
+    def get_vapp_ip(self, vapp_name):
+        return self._vcloud_client.get_vapp_ip(vapp_name)
 
     def _attach_volume_iscsi(self, instance, connection_info):
         user = CONF.vcloud.image_user
@@ -751,23 +797,3 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug("unplug_vifs")
         for vif in network_info:
             self.hyper_agent_api.unplug(instance.uuid, vif)
-
-    def _wait_hybrid_server_up(self, max_retry_count=-1, inc_sleep_time=10,
-                 max_sleep_time=60, exceptions=()):
-        """Configure the retry object using the input params.
-
-        :param max_retry_count: maximum number of times the given function must
-                                be retried when one of the input 'exceptions'
-                                is caught. When set to -1, it will be retried
-                                indefinitely until an exception is thrown
-                                and the caught exception is not in param
-                                exceptions.
-        :param inc_sleep_time: incremental time in seconds for sleep time
-                               between retries
-        :param max_sleep_time: max sleep time in seconds beyond which the sleep
-                               time will not be incremented using param
-                               inc_sleep_time. On reaching this threshold,
-                               max_sleep_time will be used as the sleep time.
-        :param exceptions: suggested exceptions for which the function must be
-                           retried
-        """

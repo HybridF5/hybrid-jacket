@@ -194,7 +194,7 @@ class VCloudClient(object):
                 "reboot vapp failed, task: %s" % task)
         self._session.wait_for_task(task)
 
-    def get_vapp_base_ip(self, vapp_name):
+    def get_vapp_ip(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
         vms_network_info = self._invoke_vapp_api(the_vapp, "get_vms_network_info")
         if vms_network_info:
@@ -237,6 +237,14 @@ class VCloudClient(object):
             LOG.info('Created volume : %s', disk_name)
         else:
             raise exception.NovaException("Unable to create volume %s" % disk_name)
+
+    def delete_volume(self, disk_name):
+        result, task = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
+        if result:
+            self._session.wait_for_task(task)
+            LOG.info('delete volume : %s', disk_name)
+        else:
+            raise exception.NovaException("Unable to delete volume %s" % disk_name)         
     
     def attach_disk_to_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=16,
