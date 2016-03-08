@@ -47,6 +47,11 @@ class NotFound(APIError):
 class InvalidBaseUrl(HyperServiceException):
     pass
 
+class ConnectionError(HyperServiceException):
+    pass
+
+class InternalError(HyperServiceException):
+    pass
 
 class InvalidHost(HyperServiceException):
     pass
