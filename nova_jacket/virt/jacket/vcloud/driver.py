@@ -264,18 +264,24 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             self._vcloud_client.power_on_vapp(vapp_name)
 
             for volume_id in volume_ids:
-                disk_ref = self._vcloud_client.get_disk_ref(volume_id)
-                self._vcloud_client.attach_disk_to_vm(vapp_name, instance.uuid)
+                volume = self.cinder_api.get(context, volume_id)
+                volume_name = volume['display_name']
+                vcloud_volume_name = self._get_vcloud_volume_name(volume_id, volume_name)
+                disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
         
             vapp_ip = self.get_vapp_ip(vapp_name)
             instance.metadata['vapp_ip'] = vapp_ip
             instance.metadata['is_hybrid_vm'] = True
             instance.save()
-            self._client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            file_data = '''rabbit_userid = %s\nrabbit_password = %s\nrabbit_host = %s''' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
-            self._client.inject_file(CONF.vcloud.dst_path, file_data = file_data)               
-            self._client.create_container(root_volume.metadata.get('image_name', ''))
-            self._client.start_container(network_info=network_info, block_device_info=block_device_info)
+
+            file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
+            file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+
+            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            client.inject_file(CONF.vcloud.dst_path, file_data = file_data)               
+            client.create_container(root_volume.metadata.get('image_name', ''))
+            client.start_container(network_info=network_info, block_device_info=block_device_info)
         
             # update port bind host
             self._binding_host(context, network_info, instance.uuid)   
