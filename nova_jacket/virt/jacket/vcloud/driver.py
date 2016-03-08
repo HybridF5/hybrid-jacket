@@ -127,10 +127,10 @@ vcloudapi_opts = [
                help='The route gw of the provider network.'),
     cfg.StrOpt('dst_path',
                default = '/home/neutron_agent_conf.txt',
-           help='The config location for hybrid vm.'),
+               help='The config location for hybrid vm.'),
     cfg.StrOpt('hybrid_service_port',
-                default = '7127',
-       help='The route gw of the provider network.')           
+               default = '7127',
+               help='The route gw of the provider network.')
 ]
 
 status_dict_vapp_to_instance = {
@@ -518,8 +518,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             vapp_ip = instance.metadata.get('vapp_ip', None)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client.restart(network_info=network_info, block_device_info=block_device_info)
-
+            client.restart_container(network_info=network_info, block_device_info=block_device_info)
+            
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
