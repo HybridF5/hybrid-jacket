@@ -41,6 +41,7 @@ from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
 from hyperserviceclient.client import Client
 from hyperserviceclient import errors
+from requests import exceptions
 
 vcloudapi_opts = [
 
@@ -300,7 +301,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             print vars(disk_ref)
         print '---------------------------------------------------------------------------------------------'
         print '---------------------------------------------------------------------------------------------'
-        #self._vcloud_client.delete_volume("")
+        #self._vcloud_client.delete_volume("443639aa-8e2e-454d-9a1a-b12278ed51b9")
+        #return
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
 
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
@@ -373,12 +375,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             # 7. clean up
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
-            self._vcloud_client.create_volume(instance.uuid, instance.get_flavor().root_gb)
-            result, disk_ref = self._vcloud_client.get_disk_ref(instance.uuid)
+            self._vcloud_client.create_volume(vapp_name, instance.get_flavor().root_gb)
+            result, disk_ref = self._vcloud_client.get_disk_ref(vapp_name)
             if result:
                 self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
             else:
-                LOG.error(_('Unable to find volume %s to instance'),instance.uuid)
+                LOG.error(_('Unable to find volume %s to instance'),vapp_name)
 
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
@@ -390,16 +392,19 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             instance.save()
 
             port = CONF.vcloud.hybrid_service_port
-            client = Client(vapp_ip, port = port)
+            self._wait_hybrid_service_up(vapp_ip, port)
+
             file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
             file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+
+            client = Client(vapp_ip, port = port)
             client.inject_file(CONF.vcloud.dst_path, file_data = file_data) 
             client.create_container(image_meta.get('name', ''))
             client.start_container(network_info=network_info, block_device_info=block_device_info)
-    
+ 
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
-        
+
     @staticmethod
     def _binding_host(context, network_info, host_id):
         neutron = neutronv2.get_client(context, admin=True)
@@ -559,6 +564,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
         vm_task_state = instance.task_state
         self._update_vm_task_state(instance, vm_task_state)
+
+        #spawn from image
+        if instance.metadata.get('is_hybrid_vm', False) and self._vcloud_client.get_disk_ref(vapp_name):
+            self._vcloud_client.delete_volume(vapp_name)
+        
         try:
             self._vcloud_client.delete_vapp(vapp_name)
         except Exception as e:
@@ -809,3 +819,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug("unplug_vifs")
         for vif in network_info:
             self.hyper_agent_api.unplug(instance.uuid, vif)
+
+    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound, exceptions.ConnectionError))
+    def _wait_hybrid_service_up(self, server_ip, port = '7127'):
+        client = Client(server_ip, port = port)
+        print '-------------------------------------------------------------------------'
+        print '----------------------_wait_hybrid_service_up-----------------------------'
+        print '-------------------------------------------------------------------------'
+        return client.get_version()   
+    
