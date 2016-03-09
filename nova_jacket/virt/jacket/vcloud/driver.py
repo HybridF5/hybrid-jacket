@@ -275,6 +275,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             instance.metadata['is_hybrid_vm'] = True
             instance.save()
 
+            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+
             file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
             file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
 
@@ -300,8 +302,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             print vars(disk_ref)
         print '---------------------------------------------------------------------------------------------'
         print '---------------------------------------------------------------------------------------------'
-        #self._vcloud_client.delete_volume("443639aa-8e2e-454d-9a1a-b12278ed51b9")
-        #return
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
 
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
