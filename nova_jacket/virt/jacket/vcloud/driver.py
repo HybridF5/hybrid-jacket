@@ -41,7 +41,6 @@ from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
 from hyperserviceclient.client import Client
 from hyperserviceclient import errors
-from requests import exceptions
 
 vcloudapi_opts = [
 
@@ -387,6 +386,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     
         if is_hybrid_vm:
             vapp_ip = self.get_vapp_ip(vapp_name)
+            #dhcp can changed?
             instance.metadata['vapp_ip'] = vapp_ip
             instance.metadata['is_hybrid_vm'] = True
             instance.save()
@@ -398,7 +398,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
 
             client = Client(vapp_ip, port = port)
-            client.inject_file(CONF.vcloud.dst_path, file_data = file_data) 
+            client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
             client.create_container(image_meta.get('name', ''))
             client.start_container(network_info=network_info, block_device_info=block_device_info)
  
@@ -551,6 +551,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         
         if instance.metadata.get('is_hybrid_vm', False): 
             vapp_ip = instance.metadata.get('vapp_ip', None)
+            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             client.start_container(network_info = network_info, block_device_info = block_device_info)
 
@@ -565,16 +566,20 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         vm_task_state = instance.task_state
         self._update_vm_task_state(instance, vm_task_state)
 
-        #spawn from image
-        if instance.metadata.get('is_hybrid_vm', False) and self._vcloud_client.get_disk_ref(vapp_name):
-            self._vcloud_client.delete_volume(vapp_name)
+        if instance.metadata.get('is_hybrid_vm', False):
+            result, disk_ref = self._vcloud_client.get_disk_ref(vapp_name)
+            #spawn from image           
+            if result:
+                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
+                self._vcloud_client.delete_volume(vapp_name)
         
         try:
             self._vcloud_client.delete_vapp(vapp_name)
         except Exception as e:
             LOG.error('delete vapp failed %s' % e)
         try:
-            self._vcloud_client.delete_metadata_iso(vapp_name)
+            if not instance.metadata.get('is_hybrid_vm', False):
+                self._vcloud_client.delete_metadata_iso(vapp_name)
         except Exception as e:
             LOG.error('delete metadata iso failed %s' % e)
 
@@ -820,11 +825,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         for vif in network_info:
             self.hyper_agent_api.unplug(instance.uuid, vif)
 
-    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound, exceptions.ConnectionError))
+    @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
     def _wait_hybrid_service_up(self, server_ip, port = '7127'):
         client = Client(server_ip, port = port)
-        print '-------------------------------------------------------------------------'
-        print '----------------------_wait_hybrid_service_up-----------------------------'
-        print '-------------------------------------------------------------------------'
-        return client.get_version()   
-    
+        return client.get_version()    
