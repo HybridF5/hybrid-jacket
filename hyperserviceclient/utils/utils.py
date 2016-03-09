@@ -26,7 +26,6 @@ def start_container_config(network_info, block_device_info):
 
 
 def inject_file_config(dst_path, src_path, file_data):
-    import pdb;pdb.set_trace()
     if src_path:
         with open(src_path) as f:
             data = f.read()
