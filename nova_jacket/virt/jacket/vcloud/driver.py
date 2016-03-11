@@ -212,6 +212,20 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         self.hyper_agent_api = hyper_agent_api.HyperAgentAPI()
         super(VCloudDriver, self).__init__(virtapi)
 
+        #begin test
+        disk_refs = self._vcloud_client._invoke_api('get_diskRefs',
+                                     self._vcloud_client._get_vcloud_vdc())
+        print '---------------------------------------------------------------------------------------------'
+        print '---------------------------------------------------------------------------------------------'
+        for disk_ref in disk_refs:
+            print vars(disk_ref)
+        print '---------------------------------------------------------------------------------------------'
+        print '---------------------------------------------------------------------------------------------'
+        self._vcloud_client.delete_volume('server@21e5c687-658a-4c41-94f8-056851f9b81a')
+        self._vcloud_client.delete_volume('server@21442c9a-54d6-4c2c-8259-9f2934e8cb1b')
+        self._vcloud_client.delete_volume('server@7208b31e-0cf1-4d2f-9133-b307e7904a78')
+        self._vcloud_client.delete_volume('server@8211e65d-9ff4-4f51-b29a-c3ced6d28dd3')
+        #end test
 
     def _update_vm_task_state(self, instance, task_state):
         instance.task_state = task_state
@@ -292,16 +306,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             LOG.info("boot from volume for normal vm not supported!")              
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
-
-        disk_refs = self._vcloud_client._invoke_api('get_diskRefs',
-                                     self._vcloud_client._get_vcloud_vdc())
-        #test
-        print '---------------------------------------------------------------------------------------------'
-        print '---------------------------------------------------------------------------------------------'
-        for disk_ref in disk_refs:
-            print vars(disk_ref)
-        print '---------------------------------------------------------------------------------------------'
-        print '---------------------------------------------------------------------------------------------'
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
 
         if 'container_format' in image_meta and image_meta['container_format'] == 'hybridvm':
