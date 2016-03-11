@@ -192,6 +192,10 @@ def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=60, e
                         return result
                 except exceptions:
                     retry_count, sleep_time = _sleep(retry_count, sleep_time)
+            
+            if max_retry_count != -1 and retry_count >= max_retry_count:
+                LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
+                                  {'name': func 'retry_count': retry_count, 'max_retry_count': max_retry_count})
         return handle_args
     return handle_func
 
@@ -402,9 +406,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
 
             client = Client(vapp_ip, port = port)
-            client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
-            client.create_container(image_meta.get('name', ''))
-            client.start_container(network_info=network_info, block_device_info=block_device_info)
+            try:
+                client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+                client.create_container(image_meta.get('name', ''))
+                client.start_container(network_info=network_info, block_device_info=block_device_info)
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("instance %s spawn from image failed %s"% (vapp_name, e))
  
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
@@ -533,15 +540,21 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             vapp_ip = instance.metadata.get('vapp_ip', None)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client.restart_container(network_info=network_info, block_device_info=block_device_info)
-            
+            try:
+                client.restart_container(network_info=network_info, block_device_info=block_device_info)
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("reboot instance %s failed reason %s" % (vapp_name, e))
+
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
         if instance.metadata.get('is_hybrid_vm', False):  
             vapp_ip = instance.metadata.get('vapp_ip', None)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client.stop_container()
+            try:
+                client.stop_container()
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("power off instance %s failed reason %s" % (vapp_name, e))
 
         vapp_name = self._get_vcloud_vapp_name(instance)
         try:
@@ -557,7 +570,10 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             vapp_ip = instance.metadata.get('vapp_ip', None)
             self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client.start_container(network_info = network_info, block_device_info = block_device_info)
+            try:
+                client.start_container(network_info = network_info, block_device_info = block_device_info)
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("power on instance %s failed reason %s" % (vapp_name, e))
 
     def _do_destroy_vm(self, context, instance, network_info, block_device_info=None,
                        destroy_disks=True, migrate_data=None):
