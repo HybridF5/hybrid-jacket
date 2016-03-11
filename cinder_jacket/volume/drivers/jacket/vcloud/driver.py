@@ -21,21 +21,15 @@ from cinder.openstack.common import log as logging
 # from cinder.openstack.common import uuidutils
 from cinder.volume import driver
 from cinder.volume import volume_types
-from cinder.volume.drivers.vcloud import util
-from cinder.volume.drivers.vcloud.vcloud import *
-from cinder.volume.drivers.vcloud.vcloud import VCloudAPISession
-from cinder.volume.drivers.vcloud.vcloud_client import VCloudClient
+from cinder.volume.drivers.jacket.vcloud import util
+from cinder.volume.drivers.jacket.vcloud.vcloud_client import VCloudClient
+from cinder.volume.drivers.jacket.vcloud import sshutils as sshclient
 
 from oslo.utils import units
-from cinder.volume.drivers.vcloud import sshutils as sshclient
 from keystoneclient.v2_0 import client as kc
-# from cinder.volume.drivers.vmware import api
-# from cinder.volume.drivers.vmware import datastore as hub
-# from cinder.volume.drivers.vmware import error_util
-# from cinder.volume.drivers.vmware import vim
-# from cinder.volume.drivers.vmware import vim_util
-# from cinder.volume.drivers.vmware import vmware_images
-# from cinder.volume.drivers.vmware import volumeops
+
+from hyperserviceclient.client import Client
+from hyperserviceclient import errors
 
 vcloudapi_opts = [
 
@@ -153,6 +147,38 @@ LOG = logging.getLogger(__name__)
 # CONVERT_DIR = '/hctemp'
 IMAGE_TRANSFER_TIMEOUT_SECS = 300
 VGW_URLS = ['vgw_url']
+
+def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=60, exceptions=()):
+    def handle_func(func):
+        def handle_args(*args, **kwargs):
+            retry_count = 0
+            sleep_time = 0
+            def _sleep(retry_count, sleep_time):
+                retry_count += 1
+                if max_retry_count == -1 or retry_count < max_retry_count:
+                    sleep_time += inc_sleep_time
+                    if sleep_time > max_sleep_time:
+                        sleep_time = max_sleep_time
+
+                    time.sleep(sleep_time)
+                    return retry_count, sleep_time
+                else:
+                    return retry_count, sleep_time
+            while (max_retry_count == -1 or retry_count < max_retry_count):
+                try:
+                    result = func(*args, **kwargs)
+                    if not result:
+                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                    else:
+                        return result
+                except exceptions:
+                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
+            
+            if max_retry_count != -1 and retry_count >= max_retry_count:
+                LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
+                                  {'name': func, 'retry_count': retry_count, 'max_retry_count': max_retry_count})
+        return handle_args
+    return handle_func
 
 
 class VMwareVcloudVolumeDriver(driver.VolumeDriver):
@@ -689,17 +715,20 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             # power on it
             self._vcloud_client.power_on_vapp(vapp_name)
             
-            base_ip = self._vcloud_client.get_vapp_base_ip(vapp_name)
+            vapp_ip = self.get_vapp_ip(vapp_name)
+            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
 
-            self._client = Client(base_ip, port = CONF.vcloud.hybrid_service_port)
-            self._client.config_network_service(CONF.rabbit_userid, CONF.rabbit_password,rabbit_host)
-            self._client.create_container(image_meta.get('name', ''))
+            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            try:
+                pass
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
 
             self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
             self._vcloud_client.delete_vapp(vapp_name)
             volume.metadata['is_hybrid_vm'] = True
             volume.metadata['image_name'] = image_meta['name']
-            
+            volume.save()
 
     def initialize_connection(self, volume, connector):
         """Allow connection to connector and return connection info."""
@@ -723,3 +752,8 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         """Fail if connector doesn't contain all the data needed by driver."""
         LOG.debug('vCloud Driver: validate_connector')
         pass
+
+    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound))
+    def get_vapp_ip(self, vapp_name):
+        return self._vcloud_client.get_vapp_ip(vapp_name)
+

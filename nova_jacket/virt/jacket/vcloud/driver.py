@@ -225,10 +225,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             print vars(disk_ref)
         print '---------------------------------------------------------------------------------------------'
         print '---------------------------------------------------------------------------------------------'
-        self._vcloud_client.delete_volume('server@21e5c687-658a-4c41-94f8-056851f9b81a')
-        self._vcloud_client.delete_volume('server@21442c9a-54d6-4c2c-8259-9f2934e8cb1b')
-        self._vcloud_client.delete_volume('server@7208b31e-0cf1-4d2f-9133-b307e7904a78')
-        self._vcloud_client.delete_volume('server@8211e65d-9ff4-4f51-b29a-c3ced6d28dd3')
         #end test
 
     def _update_vm_task_state(self, instance, task_state):
@@ -407,11 +403,14 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
             client = Client(vapp_ip, port = port)
             try:
+                LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
                 client.create_container(image_meta.get('name', ''))
+                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
                 client.start_container(network_info=network_info, block_device_info=block_device_info)
             except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
+                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
  
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
