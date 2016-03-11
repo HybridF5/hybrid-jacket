@@ -2,11 +2,13 @@
 import subprocess
 import time
 
+from cinder import exception
 from cinder.openstack.common import log as logging
-from cinder.volume.drivers.jacket.vcloud import RetryDecorator
-from cinder.volume.drivers.jacket.vcloud import VCloudAPISession
+from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
+from cinder.volume.drivers.jacket.vcloud.vcloud import VCloudAPISession
 from cinder.volume.drivers.jacket.vcloud import exceptions
 from oslo.config import cfg
+from oslo.utils import units
 from setuptools.command.egg_info import overwrite_arg
 
 
@@ -17,7 +19,7 @@ CONF = cfg.CONF
 class VCloudClient(object):
 
     def __init__(self, scheme):
-        self._metadata_iso_catalog = CONF.vcloud.metadata_iso_catalog
+        #self._metadata_iso_catalog = CONF.vcloud.metadata_iso_catalog
         self._session = VCloudAPISession(
             host_ip=CONF.vcloud.vcloud_host_ip,
             host_port=CONF.vcloud.vcloud_host_port,
@@ -54,8 +56,7 @@ class VCloudClient(object):
         return self._session.host_ip
 
     def _get_vcloud_vdc(self):
-        return self._invoke_api("get_vdc",
-                                self._session.vdc)
+        return self._invoke_api("get_vdc", self.vdc)
 
     def _get_vcloud_vapp(self, vapp_name):
         the_vapp = self._invoke_api("get_vapp",
@@ -84,20 +85,25 @@ class VCloudClient(object):
         return res
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._vca, "add_disk", self._vdc, disk_name, disk_size)
+        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
         if result:
             self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
-            LOG.info('Created volume : %s', disk_name)
+            LOG.info('Created volume : %s sucess', disk_name)
         else:
-            raise exceptions.VCloudDriverException("Unable to create volume %s" % disk_name)
+            err_msg = 'Unable to create volume, reason: %s' % resp
+            LOG.error(err_msg)
+            raise exception.VolumeBackendAPIException(err_msg)
 
     def delete_volume(self, disk_name):
-        result, task = self._session.invoke_api(self._vca, "delete_disk", self._vdc, disk_name)
+        result, resp = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
         if result:
-            self._session.wait_for_task(task)
-            LOG.info('Created volume : %s', disk_name)
+            self._session.wait_for_task(resp)
+            LOG.info('delete volume : %s sucess', disk_name)
         else:
-            raise exceptions.VCloudDriverException("Unable to delete volume %s" % disk_name)
+            if resp == 'disk not found':
+                LOG.warning('delete_volume: unable to find volume %(name)s', {'name': disk_name})
+            else:
+                raise exception.VolumeBackendAPIException("Unable to delete volume %s" % disk_name)
 
 
     def attach_disk_to_vm(self, vapp_name, disk_ref):
@@ -148,7 +154,7 @@ class VCloudClient(object):
     def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
         result, task = self._session.invoke_api(self._session.vca,
                                                 "create_vapp",
-                                                self._session._vdc, vapp_name,
+                                                self.vdc, vapp_name,
                                                 template_name, network_configs=network_configs, root_gb=root_gb)
 
         # check the task is success or not
@@ -157,7 +163,7 @@ class VCloudClient(object):
                 "Create_vapp error, task:" +
                 task)
         self._session.wait_for_task(task)
-        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self._session._vdc)
+        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
 
         return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
 
@@ -233,7 +239,7 @@ class VCloudClient(object):
         return _power_on(vapp_name)
 
     def get_network_configs(self, network_names):
-        return self._session.invoke_api(self._session.vca, "get_network_configs", self._session._vdc, network_names)
+        return self._session.invoke_api(self._session.vca, "get_network_configs", self.vdc, network_names)
 
     def get_network_connections(self, vapp, network_names):
         return self._session.invoke_api(vapp, "get_network_connections", network_names)

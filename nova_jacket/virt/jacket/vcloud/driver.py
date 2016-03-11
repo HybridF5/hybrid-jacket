@@ -125,12 +125,13 @@ vcloudapi_opts = [
                help='The tunnel cidr of provider network.'),
     cfg.StrOpt('route_gw',
                help='The route gw of the provider network.'),
+
     cfg.StrOpt('dst_path',
                default = '/home/neutron_agent_conf.txt',
                help='The config location for hybrid vm.'),
     cfg.StrOpt('hybrid_service_port',
                default = '7127',
-               help='The route gw of the provider network.')
+               help='The port of the hybrid service.')
 ]
 
 status_dict_vapp_to_instance = {
@@ -295,9 +296,14 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
 
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client.inject_file(CONF.vcloud.dst_path, file_data = file_data)               
-            client.create_container(root_volume.metadata.get('image_name', ''))
-            client.start_container(network_info=network_info, block_device_info=block_device_info)
+            try:
+                LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
+                client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
+                client.start_container(network_info=network_info, block_device_info=block_device_info)
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
+
         
             # update port bind host
             self._binding_host(context, network_info, instance.uuid)   

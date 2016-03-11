@@ -22,10 +22,10 @@ from cinder.openstack.common import log as logging
 from cinder.volume import driver
 from cinder.volume import volume_types
 from cinder.volume.drivers.jacket.vcloud import util
+from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
 from cinder.volume.drivers.jacket.vcloud.vcloud_client import VCloudClient
 from cinder.volume.drivers.jacket.vcloud import sshutils as sshclient
 
-from oslo.utils import units
 from keystoneclient.v2_0 import client as kc
 
 from hyperserviceclient.client import Client
@@ -91,6 +91,14 @@ vcloudapi_opts = [
     cfg.StrOpt('vcloud_volumes_dir',
                default='/vcloud/volumes',
                help='the directory of volume files'),
+
+    cfg.StrOpt('provider_base_network_name',
+               help='The provider network name which base provider network use.'),
+    cfg.StrOpt('provider_tunnel_network_name',
+               help='The provider network name which tunnel provider network use.'),
+    cfg.StrOpt('hybrid_service_port',
+               default = '7127',
+               help='The port of the hybrid service.')
 ]
 
 vcloudvgw_opts = [
@@ -198,12 +206,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         #self._vgw_url = CONF.vgw.vcloud_vgw_url
         self._vgw_store_file_dir = CONF.vgw.store_file_dir
 
-    def _create_volume(self, name, size):
-        return self._vcloud_client.create_volume(name, size)
-
-    def _delete_volume(self, name):
-        return self._vcloud_client.delete_volume(name)
-
     def _get_vcloud_volume_name(self, volume_id, volume_name):
         prefix = 'volume@'
         if volume_name.startswith(prefix):
@@ -248,50 +250,25 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
     def create_volume(self, volume):
         """Create a volume."""
         volume_name = volume['display_name']
-        volume_size = int(volume['size']) * units.Gi
-        # use volume_name as vcloud disk name, remove prefix str `volume@`
+         # use volume_name as vcloud disk name, remove prefix str `volume@`
         # if volume_name does not start with volume@, then use volume id instead
 
-        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],
-                                                          volume_name)
+        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],volume_name)
 
-        LOG.debug('Creating volume %(name)s of size %(size)s',
-                  {'name': vcloud_volume_name, 'size': volume_size})
+        LOG.debug('Creating volume %(name)s of size %(size)s Gb',
+                  {'name': vcloud_volume_name, 'size': volume['size']})
 
-        result, resp = self._create_volume(vcloud_volume_name, volume_size)
-        if result:
-            self._session.wait_for_task(resp)
-            LOG.info('Created volume : %(name)s',
-                     {'name': vcloud_volume_name})
-        else:
-            err_msg = 'Unable to create volume, reason: %s' % resp
-            LOG.error(err_msg)
-            raise exception.VolumeBackendAPIException(
-                            err_msg)
+        self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
+
 
     def delete_volume(self, volume):
         """Delete a volume."""
         volume_name = volume['display_name']
-
         vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],
                                                           volume_name)
         LOG.debug('Deleting volume %s', vcloud_volume_name)
 
-        result, resp = self._delete_volume(vcloud_volume_name)
-        if result:
-            self._session.wait_for_task(resp)
-            LOG.info('Deleted volume : %(name)s',
-                     {'name': vcloud_volume_name})
-        else:
-            if resp == 'disk not found':
-                LOG.warning('delete_volume: unable to find volume %(name)s',
-                    {'name': vcloud_volume_name})
-                # If we can't find the volume then it is effectively gone.
-                return True
-            else:
-                err_msg = _('Unable to delete volume, reason: %s' % resp)
-                LOG.error(err_msg)
-                raise exception.VolumeBackendAPIException(err_msg)
+        self._vcloud_client.delete_volume(vcloud_volume_name)
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Create a volume from a snapshot."""
@@ -657,7 +634,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
     @utils.synchronized("vcloud_volume_copy_lock", external=True)
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Creates volume from image."""
-        LOG.error('begin time of copy_image_to_volume is %s' % (time.strftime(
+        LOG.debug('begin time of copy_image_to_volume is %s' % (time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime())))
 
         image_meta = image_service.show(context, image_id)
@@ -700,7 +677,8 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             network_configs = self._vcloud_client.get_network_configs(network_names)
             
             # create vapp
-            vapp_name = volume['id']
+            vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['displya_name'])
+            vapp_name = vcloud_volume_name
             vapp = self._vcloud_client.create_vapp(vapp_name, image_id, network_configs)
             
             # generate the network_connection
@@ -709,18 +687,18 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             # update network
             self._vcloud_client.update_vms_connections(vapp, network_connections)
 
-            disk_ref = self._vcloud_client.get_disk_ref(volume['id'])
+            disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
             self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
 
             # power on it
             self._vcloud_client.power_on_vapp(vapp_name)
             
             vapp_ip = self.get_vapp_ip(vapp_name)
-            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            self._wait_hybrid_service_up(vapp_ip, port=CONF.vcloud.hybrid_service_port)
 
-            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+            client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
             try:
-                pass
+                client.create_container(image_meta,get('name', None))
             except (errors.NotFound, errors.APIError) as e:
                 LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
 
@@ -753,7 +731,20 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         LOG.debug('vCloud Driver: validate_connector')
         pass
 
+    def _get_vcloud_volume_name(self, volume_id, volume_name):
+        prefix = 'volume@'
+        if volume_name.startswith(prefix):
+            vcloud_volume_name = volume_name[len(prefix):]
+        else:
+            vcloud_volume_name = volume_id
+    
+        return vcloud_volume_name
+
     @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound))
     def get_vapp_ip(self, vapp_name):
         return self._vcloud_client.get_vapp_ip(vapp_name)
 
+    @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
+    def _wait_hybrid_service_up(self, server_ip, port = '7127'):
+        client = Client(server_ip, port = port)
+        return client.get_version()

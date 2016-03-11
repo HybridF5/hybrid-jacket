@@ -9,8 +9,8 @@ from nova.virt.jacket.vcloud.vcloud import RetryDecorator
 from nova.virt.jacket.vcloud.vcloud import VCloudAPISession
 from nova.virt.jacket.vcloud.vcloud import exceptions
 from oslo.config import cfg
+from oslo.utils import units
 from setuptools.command.egg_info import overwrite_arg
-
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
@@ -165,7 +165,7 @@ class VCloudClient(object):
     def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
         result, task = self._session.invoke_api(self._session.vca,
                                                 "create_vapp",
-                                                self._session._vdc, vapp_name,
+                                                self.vdc, vapp_name,
                                                 template_name, network_configs=network_configs, root_gb=root_gb)
 
         # check the task is success or not
@@ -174,7 +174,7 @@ class VCloudClient(object):
                 "Create_vapp error, task:" +
                 task)
         self._session.wait_for_task(task)
-        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self._session._vdc)
+        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
 
         return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)        
 
@@ -231,20 +231,23 @@ class VCloudClient(object):
         return referenced_file_url
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, disk_size*1024*1024*1024)
+        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size)*units.Gi)
         if result:
             self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
-            LOG.info('Created volume : %s', disk_name)
+            LOG.info('Created volume : %s sucess', disk_name)
         else:
             raise exception.NovaException("Unable to create volume %s" % disk_name)
 
     def delete_volume(self, disk_name):
-        result, task = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
+        result, resp = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
         if result:
-            self._session.wait_for_task(task)
-            LOG.info('delete volume : %s', disk_name)
+            self._session.wait_for_task(resp)
+            LOG.info('delete volume : %s success', disk_name)
         else:
-            raise exception.NovaException("Unable to delete volume %s" % disk_name)         
+            if resp == 'disk not found':
+                LOG.warning('delete_volume: unable to find volume %(name)s', {'name': disk_name})
+            else:
+                raise exception.NovaException("Unable to delete volume %s" % disk_name)         
     
     def attach_disk_to_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=16,
@@ -366,7 +369,7 @@ class VCloudClient(object):
                 "delete metadata iso failed vapp_name:%s" % vapp_name)
 
     def get_network_configs(self, network_names):
-        return self._session.invoke_api(self._session.vca, "get_network_configs", self._session._vdc, network_names)
+        return self._session.invoke_api(self._session.vca, "get_network_configs", self.vdc, network_names)
 
     def get_network_connections(self, vapp, network_names):
         return self._session.invoke_api(vapp, "get_network_connections", network_names)
