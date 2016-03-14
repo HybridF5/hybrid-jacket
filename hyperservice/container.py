@@ -2,6 +2,7 @@ import webob
 
 from hyperservice import exception
 from hyperservice import wsgi
+from hyperservice import volumes
 
 from hyperservice.common import log
 from hyperservice.common import importutils
@@ -30,9 +31,29 @@ class ContainerController(wsgi.Application):
     def __init__(self):
         self._docker = None
         self._container = None
+        self._used_eths = None
         vif_class = importutils.import_class(CONF.docker.vif_driver)
         self.vif_driver = vif_class()
         super(ContainerController, self).__init__()
+
+    def _available_eth_name(self):
+        net_prefix = 'eth'
+        if self._used_eths is None:
+            exec_id = self.docker.exec_create(self.container['id'], 'ifconfig -a')
+            res = self.docker.exec_start(exec_id)
+            _found_dev = set()
+            for line in res.split('\n'):
+                if line.startswith(net_prefix):
+                    _found_dev.add(line.split()[0])
+            self._used_eths = _found_dev
+        i = 0
+        while 1:
+            name = net_prefix + str(i)
+            if name not in self._used_eths:
+                self._used_eths.add(name)
+                LOG.debug("available net name ==> %s", name)
+                return name
+            i += 1
 
     @property
     def docker(self):
@@ -59,7 +80,7 @@ class ContainerController(wsgi.Application):
         instance = self.container['id']
         for vif in network_info:
             LOG.debug("plug vif %s", vif)
-            self.vif_driver.plug(instance, vif)
+            self.vif_driver.plug(vif, instance)
 
     def _find_container_pid(self, container_id):
         n = 0
@@ -102,24 +123,32 @@ class ContainerController(wsgi.Application):
                       'set', 'lo', 'up', run_as_root=True)
 
         instance = container_id
-        for vif in network_info:
-            self.vif_driver.attach(vif, instance, container_id)
+
+        for idx, vif in enumerate(network_info):
+            new_remote_name = self._available_eth_name()
+            self.vif_driver.attach(vif, instance, container_id, new_remote_name)
 
     def create(self, request, image_name, volume_id=None):
         """ create the container. """
         if volume_id:
             # Create VM from volume, create a symbolic link for the device.
             LOG.info("create new container from volume %s", volume_id)
+            volumes.create_root_symbolic(volume_id)
             pass
-        # return webob.Response(status="201 Created", body='{ "id" : "testid" } ')
-        return self.docker.create_container(image_name, network_disabled=True)
+        try:
+            _ = self.container
+            LOG.warn("Already a container exists")
+            return None
+            # raise exception.ContainerExists()
+        except exception.ContainerNotFound:
+            return self.docker.create_container(image_name, network_disabled=True)
 
     def start(self, request, network_info={}, block_device_info={}):
         """ Start the container. """
         container_id = self.container['id']
         LOG.info("start container %s network_info %s block_device_info ", 
                      container_id, network_info, block_device_info)
-        self.docker.start(container_id)
+        self.docker.start(container_id, privileged=True)
         if not network_info:
             return
         try:
@@ -174,7 +203,7 @@ class ContainerController(wsgi.Application):
         try:
             network.teardown_network(container_id)
             if network_info:
-                # self.unplug_vifs(network_info)
+                self.unplug_vifs(network_info)
                 netns_file = '/var/run/netns/{0}'.format(container_id)
                 # if os.path.exists(netns_file):
                     # os.remove(netns_file)
@@ -191,9 +220,27 @@ class ContainerController(wsgi.Application):
                 self.plug_vifs(network_info)
                 self._attach_vifs(network_info)
         except Exception as e:
-            LOG.warning(_('Cannot setup network on reboot: {0}'), e,
+            LOG.warning(_('Cannot setup network on reboot: %s'), e,
                         exc_info=True)
             return
+
+    def detach_interface(self, request, vif):
+        if vif:
+            LOG.debug("detach network info %s", vif)
+            instance = self.container['id']
+            self.vif_driver.unplug(instance, vif)
+        return webob.Response(status_int=200)
+
+    def attach_interface(self, request, vif):
+        if vif:
+            LOG.debug("attach network info %s", vif)
+            container_id = self.container['id']
+            instance = container_id
+            self.vif_driver.plug(vif, instance)
+            new_remote_name = self._available_eth_name()
+            self.vif_driver.attach(vif, instance, container_id, new_remote_name)
+        return webob.Response(status_int=200)
+
 
 def create_router(mapper):
     controller = ContainerController()
@@ -212,4 +259,13 @@ def create_router(mapper):
     mapper.connect('/container/restart',
                    controller=controller,
                    action='restart',
+                   conditions=dict(method=['POST']))
+
+    mapper.connect('/container/attach-interface',
+                   controller=controller,
+                   action='attach_interface',
+                   conditions=dict(method=['POST']))
+    mapper.connect('/container/detach-interface',
+                   controller=controller,
+                   action='detach_interface',
                    conditions=dict(method=['POST']))

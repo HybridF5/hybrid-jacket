@@ -139,6 +139,10 @@ class ContainerNotFound(NotFound):
 class ContainerCreateFailed(HyperserviceException):
     msg_fmt = _("Unable to create Container")
 
+class ContainerExists(HyperserviceException):
+    code = 409
+    msg_fmt = _("Unable to create Container")
+
 class ContainerStartFailed(HyperserviceException):
     msg_fmt = _("Unable to start Container")
 

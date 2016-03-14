@@ -44,7 +44,7 @@ LOG = logging.getLogger(__name__)
 
 class DockerGenericVIFDriver(object):
 
-    def plug(self, instance, vif):
+    def plug(self, vif, instance):
         vif_type = vif['type']
 
         LOG.debug('plug vif_type=%(vif_type)s instance=%(instance)s '
@@ -156,6 +156,9 @@ class DockerGenericVIFDriver(object):
             br_name = self.get_br_name(vif['id'])
             vm_port_name = self.get_vm_ovs_port_name(vif['id'])
 
+            if_local_name = 'tap%s' % vif['id'][:11]
+            if linux_net.device_exists(if_local_name):
+                linux_net.delete_net_dev(if_local_name)
 
             if linux_net.device_exists(br_name):
                 utils.execute('brctl', 'delif', br_name, vm_port_name,
@@ -169,7 +172,7 @@ class DockerGenericVIFDriver(object):
         except processutils.ProcessExecutionError:
             LOG.exception(_("Failed while unplugging vif for %s"), instance)
 
-    def attach(self, vif, instance, container_id):
+    def attach(self, vif, instance, container_id, new_remote_name):
         vif_type = vif['type']
         if_remote_name = 'ns%s' % vif['id'][:11]
         gateway = network.find_gateway(instance, vif['network'])
@@ -183,7 +186,7 @@ class DockerGenericVIFDriver(object):
         try:
             utils.execute('ip', 'link', 'set', if_remote_name, 'netns',
                           container_id, run_as_root=True)
-            new_remote_name = 'eth0'
+            new_remote_name
             utils.execute('ip', 'netns', 'exec', container_id, 'ip', 'link',
                           'set', 'dev', if_remote_name, 'name', new_remote_name,
                           run_as_root=True)
@@ -208,12 +211,12 @@ class DockerGenericVIFDriver(object):
                               run_as_root=True)
 
             if gateway is not None:
-                # utils.execute('ip', 'netns', 'exec', container_id,
-                              # 'ip', 'route', 'replace', 'default', 'via',
-                              # gateway, 'dev', new_remote_name, run_as_root=True)
                 utils.execute('ip', 'netns', 'exec', container_id,
-                              'ip', 'route', 'add', '0.0.0.0/0', 'via',
-                              gateway,  run_as_root=True)
+                              'ip', 'route', 'replace', 'default', 'via',
+                              gateway, 'dev', new_remote_name, run_as_root=True)
+                # utils.execute('ip', 'netns', 'exec', container_id,
+                              # 'ip', 'route', 'add', '0.0.0.0/0', 'via',
+                              # gateway,  run_as_root=True)
 
             # Disable TSO, for now no config option
             utils.execute('ip', 'netns', 'exec', container_id, 'ethtool',

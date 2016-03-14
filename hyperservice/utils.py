@@ -102,6 +102,11 @@ def utf8(value):
     assert isinstance(value, str)
     return value
 
+def get_root_helper():
+    pass
+    # return 'sudo hyperservice-api %s' % CONF.rootwrap_config
+
+
 def execute(*cmd, **kwargs):
     """Convenience wrapper around oslo's execute() method."""
     if 'run_as_root' in kwargs and 'root_helper' not in kwargs:
