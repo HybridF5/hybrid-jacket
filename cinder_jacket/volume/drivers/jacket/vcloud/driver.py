@@ -625,9 +625,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         elif container_format == 'hybridvm':
             pass
 
-            
-   
-
         LOG.debug('Finished copy image %(image_name)s '
                  'to volume %(volume_name)s.',
                  {'volume_name': volume['display_name'],

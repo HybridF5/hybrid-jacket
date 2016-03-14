@@ -257,11 +257,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
     def _spawn_from_volume(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
-        
         bdms = block_device_info.get('block_device_mapping',[])
         volume_ids = self._get_volume_ids_from_bdms(bdms)
         root_volume_id = volume_ids[0]
         root_volume = self.cinder_api.get(context, root_volume_id)
+        volume_image_metadata = root_volume['volume_image_metadata']
 
         rabbit_host = CONF.rabbit_host
         if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
@@ -269,22 +269,38 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         if ':' in rabbit_host:
             rabbit_host = rabbit_host[0:rabbit_host.find(':')]
 
-        if root_volume.metadata.get("is_hybrid_vm", False):
+        if volume_image_metadata['container_format'] == 'hybridvm':
             self._binding_host(context, network_info, instance.uuid)
 
+            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+            network_configs = self._vcloud_client.get_network_configs(network_names)
+
             vapp_name = self._get_vcloud_vapp_name(instance)
-            vapp = self._vcloud_client.create_vapp(vapp_name, conf.vcloud.image_uuid, network_configs)
+            vapp = self._vcloud_client.create_vapp(vapp_name, volume_image_metadata['image_id'], network_configs)
+
+            # generate the network_connection
+            network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
+            # update network
+            self._vcloud_client.update_vms_connections(vapp, network_connections)
             
-            # power on it
-            self._vcloud_client.power_on_vapp(vapp_name)
+            # update vm specification
+            self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
+            self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
+
 
             for volume_id in volume_ids:
                 volume = self.cinder_api.get(context, volume_id)
                 volume_name = volume['display_name']
                 vcloud_volume_name = self._get_vcloud_volume_name(volume_id, volume_name)
-                disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-        
+                result,disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+                if result:
+                    self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+                else:
+                    LOG.error('attach vm %s disk %s failed', vapp_name, vcloud_volume_name)
+                
+            # power on it
+            self._vcloud_client.power_on_vapp(vapp_name)
+
             vapp_ip = self.get_vapp_ip(vapp_name)
             instance.metadata['vapp_ip'] = vapp_ip
             instance.metadata['is_hybrid_vm'] = True
@@ -299,17 +315,18 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             try:
                 LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
+                client.create_container(volume_image_metadata['image_name'])
                 LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
                 client.start_container(network_info=network_info, block_device_info=block_device_info)
             except (errors.NotFound, errors.APIError) as e:
                 LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
-
         
             # update port bind host
-            self._binding_host(context, network_info, instance.uuid)   
+            self._binding_host(context, network_info, instance.uuid)
                         
         else:
-            LOG.info("boot from volume for normal vm not supported!")              
+            LOG.info("boot from volume for normal vm not supported!")
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
         image_cache_dir = CONF.vcloud.vcloud_conversion_dir
@@ -374,11 +391,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                  "rabbit_host": rabbit_host,
                  "host": instance.uuid,
                  "tunnel_cidr": CONF.vcloud.tunnel_cidr,
-                 "route_gw": CONF.vcloud.route_gw},             
+                 "route_gw": CONF.vcloud.route_gw},
                 this_conversion_dir)
             metadata_iso = self._vcloud_client.upload_metadata_iso(iso_file,
                                                                    vapp_name)
-            # mount it                                                       
+            # mount it
             self._vcloud_client.insert_media(vapp_name, metadata_iso)
             
             # 7. clean up
@@ -855,4 +872,4 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
     def _wait_hybrid_service_up(self, server_ip, port = '7127'):
         client = Client(server_ip, port = port)
-        return client.get_version()    
+        return client.get_version()

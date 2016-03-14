@@ -98,10 +98,10 @@ class VCloudClient(object):
         result, resp = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
         if result:
             self._session.wait_for_task(resp)
-            LOG.info('delete volume : %s sucess', disk_name)
+            LOG.info('Delete volume : %s sucess', disk_name)
         else:
             if resp == 'disk not found':
-                LOG.warning('delete_volume: unable to find volume %(name)s', {'name': disk_name})
+                LOG.warning('Delete volume: unable to find volume %(name)s', {'name': disk_name})
             else:
                 raise exception.VolumeBackendAPIException("Unable to delete volume %s" % disk_name)
 
