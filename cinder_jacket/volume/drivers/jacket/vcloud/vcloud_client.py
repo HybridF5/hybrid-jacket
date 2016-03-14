@@ -2,13 +2,13 @@
 import subprocess
 import time
 
-
-from nova import exception
-from nova.openstack.common import log as logging
-from nova.virt.jacket.vcloud.vcloud import RetryDecorator
-from nova.virt.jacket.vcloud.vcloud import VCloudAPISession
-from nova.virt.jacket.vcloud.vcloud import exceptions
+from cinder import exception
+from cinder.openstack.common import log as logging
+from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
+from cinder.volume.drivers.jacket.vcloud.vcloud import VCloudAPISession
+from cinder.volume.drivers.jacket.vcloud import exceptions
 from oslo.config import cfg
+from oslo.utils import units
 from setuptools.command.egg_info import overwrite_arg
 
 
@@ -19,7 +19,7 @@ CONF = cfg.CONF
 class VCloudClient(object):
 
     def __init__(self, scheme):
-        self._metadata_iso_catalog = CONF.vcloud.metadata_iso_catalog
+        #self._metadata_iso_catalog = CONF.vcloud.metadata_iso_catalog
         self._session = VCloudAPISession(
             host_ip=CONF.vcloud.vcloud_host_ip,
             host_port=CONF.vcloud.vcloud_host_port,
@@ -56,8 +56,7 @@ class VCloudClient(object):
         return self._session.host_ip
 
     def _get_vcloud_vdc(self):
-        return self._invoke_api("get_vdc",
-                                self._session.vdc)
+        return self._invoke_api("get_vdc", self.vdc)
 
     def _get_vcloud_vapp(self, vapp_name):
         the_vapp = self._invoke_api("get_vapp",
@@ -86,30 +85,35 @@ class VCloudClient(object):
         return res
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._vca, "add_disk", self._vdc, disk_name, disk_size)
+        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
         if result:
             self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
-            LOG.info('Created volume : %s', disk_name)
+            LOG.info('Created volume : %s sucess', disk_name)
         else:
-            raise exception.VCloudDriverException("Unable to create volume %s" % disk_name)
+            err_msg = 'Unable to create volume, reason: %s' % resp
+            LOG.error(err_msg)
+            raise exception.VolumeBackendAPIException(err_msg)
 
     def delete_volume(self, disk_name):
-        result, task = self._session.invoke_api(self._vca, "delete_disk", self._vdc, disk_name)
+        result, resp = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
         if result:
-            self._session.wait_for_task(task)
-            LOG.info('Created volume : %s', disk_name)
+            self._session.wait_for_task(resp)
+            LOG.info('Delete volume : %s sucess', disk_name)
         else:
-            raise exception.VCloudDriverException("Unable to delete volume %s" % disk_name)
+            if resp == 'disk not found':
+                LOG.warning('Delete volume: unable to find volume %(name)s', {'name': disk_name})
+            else:
+                raise exception.VolumeBackendAPIException("Unable to delete volume %s" % disk_name)
 
 
     def attach_disk_to_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=16,
-                        exceptions=exception.NovaException)
+                        exceptions=exceptions.BaseVmError)
         def _attach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)
             task = the_vapp.attach_disk_to_vm(disk_ref)
             if not task:
-                raise exception.NovaException(
+                raise exceptions.BaseVmError(
                     "Unable to attach disk to vm %s" % vapp_name)
             else:
                 self._session.wait_for_task(task)
@@ -119,18 +123,18 @@ class VCloudClient(object):
 
     def detach_disk_from_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=16,
-                        exceptions=exception.NovaException)
+                        exceptions=exceptions.BaseVmError)
         def _detach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)
             task = the_vapp.detach_disk_from_vm(disk_ref)
             if not task:
-                raise exception.NovaException(
+                raise exceptions.BaseVmError(
                     "Unable to detach disk from vm %s" % vapp_name)
             else:
                 self._session.wait_for_task(task)
                 return True
 
-        return _detach_disk(vapp_name, disk_ref)            
+        return _detach_disk(vapp_name, disk_ref)
 
     def get_disk_ref(self, disk_name):
         disk_refs = self._invoke_api('get_diskRefs',
@@ -147,33 +151,9 @@ class VCloudClient(object):
         disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
         return disks
 
-    def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
-        result, task = self._session.invoke_api(self._session.vca,
-                                                "create_vapp",
-                                                self._session._vdc, vapp_name,
-                                                template_name, network_configs=network_configs, root_gb=root_gb)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Create_vapp error, task:" +
-                task)
-        self._session.wait_for_task(task)
-        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self._session._vdc)
-
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
-
-    def delete_vapp(self, vapp_name):
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-        task = self._invoke_vapp_api(the_vapp, "delete")
-        if not task:
-            raise exception.NovaException(
-                "delete vapp failed, task: %s" % task)
-        self._session.wait_for_task(task)
-
     def power_off_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=10,
-                        exceptions=exception.NovaException)
+                        exceptions=exceptions.BaseVmError)
         def _power_off(vapp_name):
             expected_vapp_status = 8
             the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -183,7 +163,7 @@ class VCloudClient(object):
 
             task_stop = self._invoke_vapp_api(the_vapp, "undeploy")
             if not task_stop:
-                raise exception.NovaException(
+                raise exceptions.BaseVmError(
                     "power off vapp failed, task")
             self._session.wait_for_task(task_stop)
 
@@ -208,7 +188,7 @@ class VCloudClient(object):
         
     def power_on_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=10,
-                        exceptions=exception.NovaException)
+                        exceptions=exceptions.BaseVmError)
         def _power_on(vapp_name):
             the_vapp = self._get_vcloud_vapp(vapp_name)
 
@@ -219,7 +199,7 @@ class VCloudClient(object):
 
             task = self._invoke_vapp_api(the_vapp, "poweron")
             if not task:
-                raise exception.NovaException("power on vapp failed, task")
+                raise exceptions.BaseVmError("power on vapp failed, task")
             self._session.wait_for_task(task)
 
             retry_times = 60
@@ -233,29 +213,3 @@ class VCloudClient(object):
             return the_vapp
 
         return _power_on(vapp_name)
-
-    def get_network_configs(self, network_names):
-        return self._session.invoke_api(self._session.vca, "get_network_configs", self._session._vdc, network_names)
-
-    def get_network_connections(self, vapp, network_names):
-        return self._session.invoke_api(vapp, "get_network_connections", network_names)
-
-    def update_vms_connections(self, vapp, network_connections):
-        result, task = self._session.invoke_api(vapp, "update_vms_connections", network_connections)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Update_vms_connections error, task:" +
-                task)
-
-        self._session.wait_for_task(task)
-
-    def get_vapp_base_ip(self, vapp_name):
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-        vms_network_info = self._invoke_vapp_api(the_vapp, "get_vms_network_info")
-        if vms_network_info:
-            return vms_network_info[0][0]['ip']
-        else:
-            return None           
-       
