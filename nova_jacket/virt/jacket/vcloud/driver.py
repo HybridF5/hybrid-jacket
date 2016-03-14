@@ -384,12 +384,13 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             # 7. clean up
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
-            self._vcloud_client.create_volume(vapp_name, instance.get_flavor().root_gb)
-            result, disk_ref = self._vcloud_client.get_disk_ref(vapp_name)
+            disk_name = 'Local@%s' % vapp_name
+            self._vcloud_client.create_volume(disk_name, instance.get_flavor().root_gb)
+            result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
             if result:
                 self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
             else:
-                LOG.error(_('Unable to find volume %s to instance'),vapp_name)
+                LOG.error(_('Unable to find volume %s to instance'),disk_name)
 
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
@@ -592,11 +593,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         self._update_vm_task_state(instance, vm_task_state)
 
         if instance.metadata.get('is_hybrid_vm', False):
-            result, disk_ref = self._vcloud_client.get_disk_ref(vapp_name)
+            disk_name = 'Local@%s' % vapp_name
+            result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
             #spawn from image           
             if result:
                 self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-                self._vcloud_client.delete_volume(vapp_name)
+                self._vcloud_client.delete_volume(disk_name)
         
         try:
             self._vcloud_client.delete_vapp(vapp_name)
