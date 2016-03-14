@@ -1,10 +1,10 @@
 import contextlib
 import distutils.version as dist_version  # pylint: disable=E0611
 import os
+import time
 import tempfile
 import shutil
 import subprocess
-import pdb
 import urllib2
 import traceback
 
@@ -28,8 +28,7 @@ from cinder.volume.drivers.jacket.vcloud import sshutils as sshclient
 
 from keystoneclient.v2_0 import client as kc
 
-from hyperserviceclient.client import Client
-from hyperserviceclient import errors
+
 
 vcloudapi_opts = [
 
@@ -91,14 +90,6 @@ vcloudapi_opts = [
     cfg.StrOpt('vcloud_volumes_dir',
                default='/vcloud/volumes',
                help='the directory of volume files'),
-
-    cfg.StrOpt('provider_base_network_name',
-               help='The provider network name which base provider network use.'),
-    cfg.StrOpt('provider_tunnel_network_name',
-               help='The provider network name which tunnel provider network use.'),
-    cfg.StrOpt('hybrid_service_port',
-               default = '7127',
-               help='The port of the hybrid service.')
 ]
 
 vcloudvgw_opts = [
@@ -156,37 +147,8 @@ LOG = logging.getLogger(__name__)
 IMAGE_TRANSFER_TIMEOUT_SECS = 300
 VGW_URLS = ['vgw_url']
 
-def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=60, exceptions=()):
-    def handle_func(func):
-        def handle_args(*args, **kwargs):
-            retry_count = 0
-            sleep_time = 0
-            def _sleep(retry_count, sleep_time):
-                retry_count += 1
-                if max_retry_count == -1 or retry_count < max_retry_count:
-                    sleep_time += inc_sleep_time
-                    if sleep_time > max_sleep_time:
-                        sleep_time = max_sleep_time
 
-                    time.sleep(sleep_time)
-                    return retry_count, sleep_time
-                else:
-                    return retry_count, sleep_time
-            while (max_retry_count == -1 or retry_count < max_retry_count):
-                try:
-                    result = func(*args, **kwargs)
-                    if not result:
-                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
-                    else:
-                        return result
-                except exceptions:
-                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
-            
-            if max_retry_count != -1 and retry_count >= max_retry_count:
-                LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
-                                  {'name': func, 'retry_count': retry_count, 'max_retry_count': max_retry_count})
-        return handle_args
-    return handle_func
+
 
 
 class VMwareVcloudVolumeDriver(driver.VolumeDriver):
@@ -289,7 +251,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         # volume_name = snapshot.get('volume_id')
         # snapshot_arn = self.aws_sg.createSnapshot(volume_name)
         # return {'provider_location': snapshot_arn}
-        # pdb.set_trace()
         context = snapshot['context']
         volume_id = snapshot['volume_id']
         # create_info = {'snapshot_id':snapshot['id'],
@@ -320,7 +281,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
     def get_volume_stats(self, refresh=False):
         """Get volume stats."""
         vdc = self._vcloud_client.vdc
-        # pdb.set_trace()
         if not self._stats:
             backend_name = self.configuration.safe_get('volume_backend_name')
             LOG.debug('*******backend_name is %s' %backend_name)
@@ -351,11 +311,9 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
     def _query_vmdk_url(self, the_vapp):
 
-        # pdb.set_trace()
         # node_name = instance.node
 
         # 0. shut down the app first
-        # pdb.set_trace()
         # node_name = instance.node
 
         # 0. shut down the app first
@@ -540,7 +498,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         else:
             def _unused():
                 # todo(wangfeng)
-                # pdb.set_trace()
                 # 1. get the vmdk file.
 
                 volume_id = volume['id']
@@ -634,7 +591,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
     @utils.synchronized("vcloud_volume_copy_lock", external=True)
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Creates volume from image."""
-        LOG.debug('begin time of copy_image_to_volume is %s' % (time.strftime(
+        LOG.info('begin time of copy_image_to_volume is %s' % (time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime())))
 
         image_meta = image_service.show(context, image_id)
@@ -665,48 +622,18 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
             # shutdown the vgw, do some clean env work
             # self._vcloud_client.power_off_vapp(the_vapp)
-            LOG.info('Finished copy image %(image_name)s '
-                     'to volume %(volume_name)s.',
-                     {'volume_name': volume['display_name'],
-                      'image_name': image_meta.get('name')})
-            LOG.error('end time of copy_image_to_volume is %s' % (time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime())))
         elif container_format == 'hybridvm':
-            #NOTE(nkapotoxin): create vapp with vapptemplate
-            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-            network_configs = self._vcloud_client.get_network_configs(network_names)
-            
-            # create vapp
-            vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['displya_name'])
-            vapp_name = vcloud_volume_name
-            vapp = self._vcloud_client.create_vapp(vapp_name, image_id, network_configs)
-            
-            # generate the network_connection
-            network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
-            
-            # update network
-            self._vcloud_client.update_vms_connections(vapp, network_connections)
+            pass
 
-            disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-            # power on it
-            self._vcloud_client.power_on_vapp(vapp_name)
             
-            vapp_ip = self.get_vapp_ip(vapp_name)
-            self._wait_hybrid_service_up(vapp_ip, port=CONF.vcloud.hybrid_service_port)
+   
 
-            client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
-            try:
-                client.create_container(image_meta,get('name', None))
-            except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
-
-            self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-            self._vcloud_client.delete_vapp(vapp_name)
-            volume.metadata['is_hybrid_vm'] = True
-            volume.metadata['image_name'] = image_meta['name']
-            volume.save()
+        LOG.debug('Finished copy image %(image_name)s '
+                 'to volume %(volume_name)s.',
+                 {'volume_name': volume['display_name'],
+                  'image_name': image_meta.get('name')})
+        LOG.info('end time of copy_image_to_volume is %s' % (time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime())))
 
     def initialize_connection(self, volume, connector):
         """Allow connection to connector and return connection info."""
@@ -730,21 +657,3 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         """Fail if connector doesn't contain all the data needed by driver."""
         LOG.debug('vCloud Driver: validate_connector')
         pass
-
-    def _get_vcloud_volume_name(self, volume_id, volume_name):
-        prefix = 'volume@'
-        if volume_name.startswith(prefix):
-            vcloud_volume_name = volume_name[len(prefix):]
-        else:
-            vcloud_volume_name = volume_id
-    
-        return vcloud_volume_name
-
-    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound))
-    def get_vapp_ip(self, vapp_name):
-        return self._vcloud_client.get_vapp_ip(vapp_name)
-
-    @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
-    def _wait_hybrid_service_up(self, server_ip, port = '7127'):
-        client = Client(server_ip, port = port)
-        return client.get_version()

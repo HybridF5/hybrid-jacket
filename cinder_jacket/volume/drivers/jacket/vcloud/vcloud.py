@@ -610,67 +610,7 @@ class VAPP(sdk_vapp):
           raise exceptions.ForbiddenException(excep_msg)
       else:
           excep_msg = "Get_vm from vapptemplate failed, response:%s" % (response)
-          raise exceptions.VCloudDriverException(excep_msg)
-
-    def create_vapp(self, vdc_name, vapp_name, template_name, catalog_name=None, network_configs=[], deploy=False,
-                    poweron=False, root_gb=None):
-        vdc = self.get_vdc(vdc_name)
-        vapp_template_entity = self.get_vapp_template(vdc, template_name)
-        if len(vapp_template_entity) < 1:
-            raise exceptions.ForbiddenException("Create_vapp error, cannot find the template %s" % template_name)
-        template_params = self._generate_instantiate_vapp_params(vapp_name, vapp_template_entity[0].href,
-                                                                       deploy=deploy, poweron=poweron,
-                                                                       network_configs=network_configs,
-                                                                       root_gb=root_gb)
-        output = StringIO()
-        template_params.export(output, 0, name_ = 'InstantiateVAppTemplateParams',
-                               namespacedef_ = '''xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"''',
-                                               pretty_print = False)
-        body = '<?xml version="1.0" encoding="UTF-8"?>' + \
-                output.getvalue().replace('class:', 'rasd:')\
-                                 .replace(' xmlns:vmw="http://www.vmware.com/vcloud/v1.5"', '')\
-                                 .replace('vmw:', 'rasd:')\
-                                 .replace('ovf:NetworkConfigSection', 'NetworkConfigSection')\
-                                 .replace('Info>', "ovf:Info>")\
-                                 .replace('<NetworkConfigSection>', '<NetworkConfigSection><ovf:Info>networks</ovf:Info>')
-        content_type = "application/vnd.vmware.vcloud.instantiateVAppTemplateParams+xml"
-        link = filter(lambda link: link.get_type() == content_type, vdc.get_Link())
-        headers = self.vcloud_session.get_vcloud_headers()
-        response = self._invoke_api(requests, 'post',
-                                            link[0].href,
-                                            headers=headers,
-                                            data=body,
-                                            verify=self.verify)
-        if response.status_code == requests.codes.forbidden:
-            raise exceptions.ForbiddenException("Create_vapp error, vapp_name:%s" % vapp_name)
-        if response.status_code == requests.codes.created:
-            vapp = vAppType.parseString(response.content, True)
-            task = vapp.get_Tasks().get_Task()[0]
-            return (True, task)
-        else:
-            return (False, response.content)
-
-
-    def get_network_ref(self, vdc_name, network_name):
-        vdc = self.get_vdc(vdc_name)
-        if not vdc:
-            return None
-        networks = vdc.get_AvailableNetworks().get_Network()
-        for n in networks:
-            if n.get_name() == network_name:
-                return n.get_href()
-
-    def get_network_configs(self, vdc_name, network_names):
-        network_configs = []
-        for n in network_names:
-            # find the network ref in vcloud
-            href = self.get_network_ref(vdc_name, n)
-            if not href:
-                raise exceptions.VCloudDriverException("Cannot find the network %s" % n)
-            network_config = NetworkConfig(network_name="VM Network", fence_mode="bridged", href=href)
-            network_configs.append(network_config)
-
-        return network_configs       
+          raise exceptions.VCloudDriverException(excep_msg)    
 
 class VCloudAPISession(object):
 

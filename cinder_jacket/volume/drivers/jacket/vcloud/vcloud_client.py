@@ -151,30 +151,6 @@ class VCloudClient(object):
         disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
         return disks
 
-    def create_vapp(self, vapp_name, template_name, network_configs, root_gb=None):
-        result, task = self._session.invoke_api(self._session.vca,
-                                                "create_vapp",
-                                                self.vdc, vapp_name,
-                                                template_name, network_configs=network_configs, root_gb=root_gb)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Create_vapp error, task:" +
-                task)
-        self._session.wait_for_task(task)
-        the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
-
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
-
-    def delete_vapp(self, vapp_name):
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-        task = self._invoke_vapp_api(the_vapp, "delete")
-        if not task:
-            raise exceptions.BaseVmError(
-                "delete vapp failed, task: %s" % task)
-        self._session.wait_for_task(task)
-
     def power_off_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=10,
                         exceptions=exceptions.BaseVmError)
@@ -237,28 +213,3 @@ class VCloudClient(object):
             return the_vapp
 
         return _power_on(vapp_name)
-
-    def get_network_configs(self, network_names):
-        return self._session.invoke_api(self._session.vca, "get_network_configs", self.vdc, network_names)
-
-    def get_network_connections(self, vapp, network_names):
-        return self._session.invoke_api(vapp, "get_network_connections", network_names)
-
-    def update_vms_connections(self, vapp, network_connections):
-        result, task = self._session.invoke_api(vapp, "update_vms_connections", network_connections)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Update_vms_connections error, task:" +
-                task)
-
-        self._session.wait_for_task(task)
-
-    def get_vapp_ip(self, vapp_name):
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-        vms_network_info = self._invoke_vapp_api(the_vapp, "get_vms_network_info")
-        if vms_network_info:
-            return vms_network_info[0][0]['ip']
-        else:
-            return None
