@@ -211,17 +211,16 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
     def create_volume(self, volume):
         """Create a volume."""
-        volume_name = volume['display_name']
-         # use volume_name as vcloud disk name, remove prefix str `volume@`
-        # if volume_name does not start with volume@, then use volume id instead
 
+        # use volume_name as vcloud disk name, remove prefix str `volume@`
+        # if volume_name does not start with volume@, then use volume id instead
+        volume_name = volume['display_name']
         vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],volume_name)
 
         LOG.debug('Creating volume %(name)s of size %(size)s Gb',
                   {'name': vcloud_volume_name, 'size': volume['size']})
 
         self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
-
 
     def delete_volume(self, volume):
         """Delete a volume."""

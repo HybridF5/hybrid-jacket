@@ -11,7 +11,6 @@ class ContainerApiMixin(object):
         self._raise_for_status(res)
         return res.raw
 
-
     def restart_container(self, timeout=10, network_info=None, block_device_info=None):
         params = {'t': timeout}
         url = self._url("/container/restart")
@@ -19,7 +18,6 @@ class ContainerApiMixin(object):
         res = self._post_json(url, params=params, data=restart_config)
         self._raise_for_status(res)
         return res.raw
-
 
     def stop_container(self, timeout=10):
         params = {'t': timeout}
@@ -33,19 +31,5 @@ class ContainerApiMixin(object):
         url = self._url("/container/start")
         start_config = utils.start_container_config(network_info, block_device_info)
         res = self._post_json(url, params=params, data=start_config)
-        self._raise_for_status(res)
-        return res.raw
-
-    def attach_interface(self, vif, timeout=10):
-        params = {'t': timeout}
-        url = self._url("/container/attach-interface")
-        res = self._post_json(url, data={ 'vif' : vif })
-        self._raise_for_status(res)
-        return res.raw
-
-    def detach_interface(self, vif, timeout=10):
-        params = {'t': timeout}
-        url = self._url("/container/detach-interface")
-        res = self._post_json(url, data={ 'vif' : vif })
         self._raise_for_status(res)
         return res.raw

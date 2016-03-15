@@ -401,7 +401,10 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             # 7. clean up
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
-            disk_name = 'Local@%s' % vapp_name
+            if vapp_name.startswith('server@'):
+                disk_name = 'Local@%s' % vapp_name[len('server@'):]
+            else:
+                disk_name = 'Local@%s' % vapp_name
             self._vcloud_client.create_volume(disk_name, instance.get_flavor().root_gb)
             result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
             if result:
@@ -610,7 +613,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         self._update_vm_task_state(instance, vm_task_state)
 
         if instance.metadata.get('is_hybrid_vm', False):
-            disk_name = 'Local@%s' % vapp_name
+            if vapp_name.startswith('server@'):
+                disk_name = 'Local@%s' % vapp_name[len('server@'):]
+            else:
+                disk_name = 'Local@%s' % vapp_name
+
             result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
             #spawn from image           
             if result:
@@ -650,12 +657,19 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
         LOG.debug("Cleanup network finished", instance=instance)
 
-
     def attach_interface(self, instance, image_meta, vif):
-        LOG.debug("attach_interface: %s, %s" % (instance, vif))
+        LOG.debug("attach interface: %s, %s" % (instance, vif))
+        
+        if instance.metadata.get('is_hybrid_vm'):
+            client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
+            client.attach_interface(vif)
 
     def detach_interface(self, instance, vif):
-        LOG.debug("detach_interface: %s, %s" % (instance, vif))
+        LOG.debug("detach interface: %s, %s" % (instance, vif))
+        
+        if instance.metadata.get('is_hybrid_vm'):
+            client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
+            client.detach_interface(vif)
 
     def _get_vapp_ip(self, instance):
         instance_id = instance.uuid
@@ -740,8 +754,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         volume_name = volume['display_name']
         # use volume_name as vcloud disk name, remove prefix str `volume@`
         # if volume_name does not start with volume@, then use volume id instead
-        vcloud_volume_name = self._get_vcloud_volume_name(volume_id,
-                                                          volume_name)
+        vcloud_volume_name = self._get_vcloud_volume_name(volume_id,  volume_name)
 
         # find volume reference by it's name
         vapp_name = self._get_vcloud_vapp_name(instance)
@@ -755,14 +768,16 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
-        else:
-            LOG.error(_('Unable to find volume %s to instance'),
-                      vcloud_volume_name)
 
-        if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
-            LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
-                     {'volume_name': vcloud_volume_name,
-                      'instance_name': instance_name})
+            if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
+                LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                         {'volume_name': vcloud_volume_name,
+                          'instance_name': instance_name})
+
+        else:
+            LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
+
+
 
     def _detach_volume_iscsi(self, instance, connection_info):
         user = CONF.vcloud.image_user
