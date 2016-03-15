@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nova.virt.hybrid.vcloud import exceptions
+from threading import Lock
+import requests
+from StringIO import StringIO
 from oslo.utils import excutils
 from oslo.vmware.common import loopingcall
 from oslo.utils import excutils
 from nova.openstack.common import log as logging
 from nova.i18n import _, _LW, _LE
-from threading import Lock
-import requests
 from requests import exceptions as requests_excep
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud import vAppType, \
     organizationListType, vdcType, catalogType, queryRecordViewType, \
@@ -31,7 +31,9 @@ from pyvcloud.schema.vcd.v1_5.schemas.vcloud.networkType import IpScopeType,\
 from pyvcloud.score import Score
 from pyvcloud.vcloudair import VCA as sdk_vca
 from pyvcloud.vapp import VAPP as sdk_vapp
-from StringIO import StringIO
+
+from nova.virt.jacket.vcloud import exceptions
+
 
 LOG = logging.getLogger(__name__)
 

@@ -162,7 +162,6 @@ status_dict_vapp_to_instance = {
 CONF = cfg.CONF
 CONF.register_opts(vcloudapi_opts, 'vcloud')
 
-
 LOG = logging.getLogger(__name__)
 
 
@@ -315,8 +314,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             try:
                 LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+
                 LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
-                client.create_container(volume_image_metadata['image_name'])
+                #will support volumes later???
+                client.create_container(volume_image_metadata['image_name'], volume_id=root_volume_id)
+
                 LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
                 client.start_container(network_info=network_info, block_device_info=block_device_info)
             except (errors.NotFound, errors.APIError) as e:

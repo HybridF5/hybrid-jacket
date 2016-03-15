@@ -3,10 +3,10 @@ from .. import utils
 
 class ContainerApiMixin(object):
 
-    def create_container(self, image_name, timeout=10):
+    def create_container(self, image_name, volume_id=None, timeout=10):
         params = {'t': timeout}
         url = self._url("/container/create")
-        create_config = utils.create_container_config(image_name)
+        create_config = utils.create_container_config(image_name, volume_id=volume_id)
         res = self._post_json(url, params=params, data=create_config)
         self._raise_for_status(res)
         return res.raw

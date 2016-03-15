@@ -5,10 +5,14 @@ def parse_host(host_ip, port, scheme):
     return '{0}://{1}:{2}'.format(scheme, host_ip, port)
 
 
-def create_container_config(image_name):
-    return {
+def create_container_config(image_name, volume_id = None):
+    result =  {
         'image_name': image_name
     }
+
+    if volume_id:
+        result['volume_id'] = volume_id
+    return result
 
 
 def restart_container_config(network_info, block_device_info):
