@@ -884,6 +884,13 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         for vif in network_info:
             self.hyper_agent_api.unplug(instance.uuid, vif)
 
+    def get_pci_slots_from_xml(self, instance):
+        """    
+        :param instance:
+        :return:
+        """
+        return []
+
     @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
     def _wait_hybrid_service_up(self, server_ip, port = '7127'):
         client = Client(server_ip, port = port)
