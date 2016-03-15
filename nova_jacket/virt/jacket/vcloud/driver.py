@@ -237,6 +237,13 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             volume_ids.append(bdm['connection_info']['data']['volume_id'])
         return volume_ids
 
+    def _get_mount_devices_from_bdms(self, bdms):
+        mount_devices = {}
+        for bdm in bdms:
+            mount_devices[bdm['connection_info']['data']['volume_id']] = bdm['mount_device']
+
+        return mount_devices
+
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
         """Create VM instance."""
@@ -258,6 +265,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
               admin_password, network_info=None, block_device_info=None):
         bdms = block_device_info.get('block_device_mapping',[])
         volume_ids = self._get_volume_ids_from_bdms(bdms)
+
         root_volume_id = volume_ids[0]
         root_volume = self.cinder_api.get(context, root_volume_id)
         volume_image_metadata = root_volume['volume_image_metadata']
@@ -286,7 +294,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
             self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
 
-
             for volume_id in volume_ids:
                 volume = self.cinder_api.get(context, volume_id)
                 volume_name = volume['display_name']
@@ -296,7 +303,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                     self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
                 else:
                     LOG.error('attach vm %s disk %s failed', vapp_name, vcloud_volume_name)
-                
+
             # power on it
             self._vcloud_client.power_on_vapp(vapp_name)
 
@@ -511,7 +518,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     #TODO: test it
     def snapshot(self, context, instance, image_id, update_task_state):
 
-        update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
+        _update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
         # 1. get vmdk url
         vapp_name = self._get_vcloud_vapp_name(instance)
         remote_vmdk_url = self._vcloud_client.query_vmdk_url(vapp_name)
@@ -771,10 +778,25 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
 
+            #odevs = set(client.list_volume())
+            #LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
+
             if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                          {'volume_name': vcloud_volume_name,
                           'instance_name': instance_name})
+
+            #ndevs = set(client.list_volume())
+            #LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
+
+            #devs = ndevs - odevs
+            devs = set([])
+            for dev in devs:
+                try:
+                    #client.attach_volume(volume_id, dev, mountpoint)
+                    pass
+                except (errors.NotFound, errors.APIError) as e:
+                    LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
         else:
             LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
 
@@ -845,6 +867,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
+            try:
+                #client.detach_volume(volume_id)
+                pass
+            except (errors.NotFound, errors.APIError) as e:
+                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
+
             if self._vcloud_client.detach_disk_from_vm(vapp_name, resp):
                 LOG.info("Volume %(volume_name)s detached from: %(instance_name)s",
                         {'volume_name': vcloud_volume_name,
@@ -852,8 +880,6 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             LOG.error(_('Unable to find volume from instance %s'),
                       vcloud_volume_name)
-
-
 
     def get_info(self, instance):
         state = power_state.NOSTATE
