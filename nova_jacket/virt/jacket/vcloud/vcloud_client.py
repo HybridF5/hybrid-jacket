@@ -100,7 +100,7 @@ class VCloudClient(object):
         return self._get_vcloud_vapp(vapp_name).me.status
 
     def power_off_vapp(self, vapp_name):
-        @RetryDecorator(max_retry_count=10,
+        @RetryDecorator(max_retry_count=60,
                         exceptions=exception.NovaException)
         def _power_off(vapp_name):
             expected_vapp_status = 8
@@ -135,7 +135,7 @@ class VCloudClient(object):
         return None
 
     def power_on_vapp(self, vapp_name):
-        @RetryDecorator(max_retry_count=10,
+        @RetryDecorator(max_retry_count=60,
                         exceptions=exception.NovaException)
         def _power_on(vapp_name):
             the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -250,7 +250,7 @@ class VCloudClient(object):
                 raise exception.NovaException("Unable to delete volume %s" % disk_name)         
     
     def attach_disk_to_vm(self, vapp_name, disk_ref):
-        @RetryDecorator(max_retry_count=16,
+        @RetryDecorator(max_retry_count=60,
                         exceptions=exception.NovaException)
         def _attach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -265,7 +265,7 @@ class VCloudClient(object):
         return _attach_disk(vapp_name, disk_ref)
 
     def detach_disk_from_vm(self, vapp_name, disk_ref):
-        @RetryDecorator(max_retry_count=16,
+        @RetryDecorator(max_retry_count=60,
                         exceptions=exception.NovaException)
         def _detach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)

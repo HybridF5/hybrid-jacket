@@ -87,7 +87,7 @@ vcloudapi_opts = [
                help='Service type for connection to VMware VCD '
                'host.'),
     cfg.IntOpt('vcloud_api_retry_count',
-               default=2,
+               default=12,
                help='Api retry count for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_conversion_dir',
@@ -168,7 +168,7 @@ LOG = logging.getLogger(__name__)
 
 IMAGE_API = image.API()
   
-def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=60, exceptions=()):
+def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, exceptions=()):
     def handle_func(func):
         def handle_args(*args, **kwargs):
             retry_count = 0
@@ -687,7 +687,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         else:
             return agent['agents'][0]['configurations']['tunneling_ip']
 
-    @_retry_decorator(max_retry_count=10,exceptions = (errors.APIError,errors.NotFound))
+    @_retry_decorator(max_retry_count=60,exceptions = (errors.APIError,errors.NotFound))
     def get_vapp_ip(self, vapp_name):
         return self._vcloud_client.get_vapp_ip(vapp_name)
 
@@ -773,11 +773,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                          {'volume_name': vcloud_volume_name,
                           'instance_name': instance_name})
-
         else:
             LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
-
-
 
     def _detach_volume_iscsi(self, instance, connection_info):
         user = CONF.vcloud.image_user
@@ -846,14 +843,15 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
+            if self._vcloud_client.detach_disk_from_vm(vapp_name, resp):
+                LOG.info("Volume %(volume_name)s detached from: %(instance_name)s",
+                        {'volume_name': vcloud_volume_name,
+                         'instance_name': instance_name})
         else:
             LOG.error(_('Unable to find volume from instance %s'),
                       vcloud_volume_name)
 
-        if self._vcloud_client.detach_disk_from_vm(vapp_name, resp):
-            LOG.info("Volume %(volume_name)s detached from: %(instance_name)s",
-                     {'volume_name': vcloud_volume_name,
-                      'instance_name': instance_name})
+
 
     def get_info(self, instance):
         state = power_state.NOSTATE
@@ -891,7 +889,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         """
         return []
 
-    @_retry_decorator(max_retry_count=10,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
+    @_retry_decorator(max_retry_count=60,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
     def _wait_hybrid_service_up(self, server_ip, port = '7127'):
         client = Client(server_ip, port = port)
         return client.get_version()

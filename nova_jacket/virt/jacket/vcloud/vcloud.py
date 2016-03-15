@@ -92,7 +92,7 @@ class RetryDecorator(object):
     """
 
     def __init__(self, max_retry_count=-1, inc_sleep_time=10,
-                 max_sleep_time=60, exceptions=()):
+                 max_sleep_time=10, exceptions=()):
         """Configure the retry object using the input params.
 
         :param max_retry_count: maximum number of times the given function must
