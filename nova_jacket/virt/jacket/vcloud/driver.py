@@ -565,7 +565,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                block_device_info=None, bad_volumes_callback=None):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
-        if not instance.metadata.get('is_hybrid_vm', False):
+        if not instance.metadata.get('is_hybrid_vm'):
             vapp_name = self._get_vcloud_vapp_name(instance)
 
             try:
@@ -573,7 +573,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             except Exception as e:
                 LOG.error('reboot instance %s failed, %s' % (vapp_name, e))
         else:
-            vapp_ip = instance.metadata.get('vapp_ip', None)
+            vapp_ip = instance.metadata.get('vapp_ip')
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             try:
                 client.restart_container(network_info=network_info, block_device_info=block_device_info)
@@ -583,8 +583,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('[vcloud nova driver] begin reboot instance: %s' %
                   instance.uuid)
-        if instance.metadata.get('is_hybrid_vm', False):  
-            vapp_ip = instance.metadata.get('vapp_ip', None)
+        if instance.metadata.get('is_hybrid_vm'):  
+            vapp_ip = instance.metadata.get('vapp_ip')
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             try:
                 client.stop_container()
@@ -601,8 +601,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         vapp_name = self._get_vcloud_vapp_name(instance)
         self._vcloud_client.power_on_vapp(vapp_name)
         
-        if instance.metadata.get('is_hybrid_vm', False): 
-            vapp_ip = instance.metadata.get('vapp_ip', None)
+        if instance.metadata.get('is_hybrid_vm'): 
+            vapp_ip = instance.metadata.get('vapp_ip')
             self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             try:
@@ -621,7 +621,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         vm_task_state = instance.task_state
         self._update_vm_task_state(instance, vm_task_state)
 
-        if instance.metadata.get('is_hybrid_vm', False):
+        if instance.metadata.get('is_hybrid_vm'):
             if vapp_name.startswith('server@'):
                 disk_name = 'Local@%s' % vapp_name[len('server@'):]
             else:
@@ -638,7 +638,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         except Exception as e:
             LOG.error('delete vapp failed %s' % e)
         try:
-            if not instance.metadata.get('is_hybrid_vm', False):
+            if not instance.metadata.get('is_hybrid_vm'):
                 self._vcloud_client.delete_metadata_iso(vapp_name)
         except Exception as e:
             LOG.error('delete metadata iso failed %s' % e)
@@ -669,14 +669,14 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
     def attach_interface(self, instance, image_meta, vif):
         LOG.debug("attach interface: %s, %s" % (instance, vif))
         
-        if instance.metadata.get('is_hybrid_vm'):
+        if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
             client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
             client.attach_interface(vif)
 
     def detach_interface(self, instance, vif):
         LOG.debug("detach interface: %s, %s" % (instance, vif))
         
-        if instance.metadata.get('is_hybrid_vm'):
+        if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
             client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
             client.detach_interface(vif)
 
@@ -777,24 +777,29 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
-
-            #odevs = set(client.list_volume())
-            #LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
+        
+            if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
+                client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
+                try:
+                    odevs = set(client.list_volume())
+                    LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
+                except (errors.NotFound, errors.APIError) as e:
+                    LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
 
             if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                          {'volume_name': vcloud_volume_name,
                           'instance_name': instance_name})
-
-            #ndevs = set(client.list_volume())
-            #LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
-
-            #devs = ndevs - odevs
-            devs = set([])
-            for dev in devs:
+            
+            if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
                 try:
-                    #client.attach_volume(volume_id, dev, mountpoint)
-                    pass
+                    ndevs = set(client.list_volume())
+                    LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
+
+                    devs = ndevs - odevs
+                    for dev in devs:
+                        #client.attach_volume(volume_id, dev, mountpoint)
+                        pass
                 except (errors.NotFound, errors.APIError) as e:
                     LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
         else:
@@ -867,11 +872,14 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
                        'disk_href': resp.href})
-            try:
-                #client.detach_volume(volume_id)
-                pass
-            except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
+
+            if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
+                try:
+                    client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
+                    #client.detach_volume(volume_id)
+                    pass
+                except (errors.NotFound, errors.APIError) as e:
+                    LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
 
             if self._vcloud_client.detach_disk_from_vm(vapp_name, resp):
                 LOG.info("Volume %(volume_name)s detached from: %(instance_name)s",
@@ -916,6 +924,20 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         :return:
         """
         return []
+
+    def _instance_is_active(self, instance):
+        """ 
+        """ 
+
+        vapp_name = self._get_vcloud_vapp_name(instance)
+        the_vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
+        vapp_status = self._vcloud_client._get_status_first_vm(the_vapp)
+
+        expected_vapp_status = 4
+        if vapp_status == expected_vapp_status:
+            return True
+        else
+            return False
 
     @_retry_decorator(max_retry_count=60,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
     def _wait_hybrid_service_up(self, server_ip, port = '7127'):
