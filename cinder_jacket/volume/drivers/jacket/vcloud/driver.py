@@ -237,7 +237,12 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
     def create_cloned_volume(self, volume, src_vref):
         """Create a clone of the specified volume."""
-        pass
+
+        LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
+
+        #self.create_volume(volume)
+        #to do
+
 
     def extend_volume(self, volume, new_size):
         """Extend a volume."""
