@@ -781,7 +781,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
                 client = Client(instance.metadata['vapp_ip'] , port = CONF.vcloud.hybrid_service_port)
                 try:
-                    odevs = set(client.list_volume())
+                    odevs = set(client.list_volume()['devices'])
                     LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
                 except (errors.NotFound, errors.APIError) as e:
                     LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
@@ -793,7 +793,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             
             if instance.metadata.get('is_hybrid_vm') and self._instance_is_active(instance):
                 try:
-                    ndevs = set(client.list_volume())
+                    ndevs = set(client.list_volume()['devices'])
                     LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
 
                     devs = ndevs - odevs
@@ -936,7 +936,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         expected_vapp_status = 4
         if vapp_status == expected_vapp_status:
             return True
-        else
+        else:
             return False
 
     @_retry_decorator(max_retry_count=60,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
