@@ -34,10 +34,10 @@ from nova.i18n import _
 from nova.virt.jacket.common import fake_driver
 from nova.virt.jacket.common import common_tools
 from nova.virt.jacket.vcloud import hyper_agent_api
+from nova.virt.jacket.vcloud import constants
 from nova.virt.jacket.vcloud import util
 from nova.virt.jacket.vcloud.vcloud import VCLOUD_STATUS
 from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
-from nova.virt.jacket.vcloud.vcloud import constants
 from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
 from hyperserviceclient.client import Client
@@ -303,7 +303,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 LOG.debug("Find volume successful, disk name is: %(disk_name)s"
                           "disk ref's href is: %(disk_href)s.",
                           {'disk_name': vcloud_volume_name,
-                           'disk_href': resp.href})
+                           'disk_href': disk_ref})
 
                 if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
                     LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
@@ -348,7 +348,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                         LOG.debug("Find volume successful, disk name is: %(disk_name)s"
                                   "disk ref's href is: %(disk_href)s.",
                                   {'disk_name': vcloud_volume_name,
-                                   'disk_href': resp.href})
+                                   'disk_href': disk_ref})
                     
                         odevs = set(client.list_volume()['devices'])
                         LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
@@ -503,7 +503,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                         LOG.debug("Find volume successful, disk name is: %(disk_name)s"
                                   "disk ref's href is: %(disk_href)s.",
                                   {'disk_name': vcloud_volume_name,
-                                   'disk_href': resp.href})
+                                   'disk_href': disk_ref})
 
                         odevs = set(client.list_volume()['devices'])
                         LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
@@ -746,7 +746,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug("attach interface: %s, %s" % (instance, vif))
         
         if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
-            and self._instance_is_active(instance):
+                and self._instance_is_active(instance):
             vapp_name = self._get_vcloud_vapp_name(instance)
             vapp_ip = self.get_vapp_ip(vapp_name)
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
@@ -756,7 +756,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug("detach interface: %s, %s" % (instance, vif))
         
         if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
-            and self._instance_is_active(instance):
+                and self._instance_is_active(instance):
             vapp_name = self._get_vcloud_vapp_name(instance)
             vapp_ip = self.get_vapp_ip(vapp_name)    
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
@@ -853,15 +853,15 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             self._attach_volume_iscsi(instance, connection_info)
             return
 
-        result, resp = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
         if result:
             LOG.debug("Find volume successful, disk name is: %(disk_name)s"
                       "disk ref's href is: %(disk_href)s.",
                       {'disk_name': vcloud_volume_name,
-                       'disk_href': resp.href})
+                       'disk_href': disk_ref})
 
             if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
-                and self._instance_is_active(instance):
+                    and self._instance_is_active(instance):
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
                 try:
@@ -870,13 +870,13 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 except (errors.NotFound, errors.APIError) as e:
                     LOG.error("instance %s list volume failed, reason %s"%(vapp_name, e))
 
-            if self._vcloud_client.attach_disk_to_vm(vapp_name, resp):
+            if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                          {'volume_name': vcloud_volume_name,
                           'instance_name': instance_name})
 
             if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
-                and self._instance_is_active(instance):
+                    and self._instance_is_active(instance):
                 try:
                     ndevs = set(client.list_volume()['devices'])
                     LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
@@ -959,7 +959,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                        'disk_href': resp.href})
 
             if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
-                and self._instance_is_active(instance):
+                    and self._instance_is_active(instance):
                 try:
                     vapp_ip = self.get_vapp_ip(vapp_name)
                     client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
