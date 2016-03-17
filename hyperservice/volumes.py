@@ -23,18 +23,15 @@ CONF.register_opts(volume_opts)
 
 LINK_DIR = "/home/.by-volume-id"
 DOCKER_LINK_NAME = "docker-data-device-link"
+DEV_DIRECTORY = "/dev/"
 
 def create_symbolic(dev_path, volume_id):
-    utils.execute('ln', '-sf', dev_path, LINK_DIR + os.path.sep + volume_id)
+    utils.trycmd('ln', '-sf', dev_path, LINK_DIR + os.path.sep + volume_id)
 
 def remove_symbolic(volume_id):
-    utils.execute('rm', LINK_DIR + os.path.sep + volume_id)
-
-def create_root_symbolic(volume_id):
-    root_dev_path = os.path.realpath(LINK_DIR + os.path.sep + DOCKER_LINK_NAME)
-    create_symbolic(root_dev_path, volume_id)
-
-volume_to_dev_mapping = {}
+    link_file = LINK_DIR + os.path.sep + volume_id
+    if os.path.islink(link_file):
+        os.remove(link_file)
 
 class VolumeController(wsgi.Application):
 
@@ -55,7 +52,7 @@ class VolumeController(wsgi.Application):
             link_path = LINK_DIR + os.path.sep + link
             if os.path.islink(link_path):
                 realpath = os.path.realpath(link_path)
-                if realpath.startswith("/dev/"):
+                if realpath.startswith(DEV_DIRECTORY):
                     self.volume_device_mapping[link] = realpath
                     LOG.info("found volume mapping %s ==> %s", 
                             link, self.volume_device_mapping[link])
@@ -66,7 +63,7 @@ class VolumeController(wsgi.Application):
         for dev in dev_out.strip().split('\n'):
             name, type = dev.split()
             if type == 'disk' and not name.endswith('da'):
-                dev_list.append("/dev/" + name)
+                dev_list.append(DEV_DIRECTORY + name)
 
         LOG.debug("scan host devices: %s", dev_list)
         return { "devices" : dev_list }
@@ -77,19 +74,33 @@ class VolumeController(wsgi.Application):
             utils.trycmd("bash", "-c", "for f in /sys/class/scsi_host/host*/scan; do echo '- - -' > $f; done")
         return self.list_host_device()
 
-    def add_mapping(self, volume, device):
-        create_symbolic(device, volume)
+    def add_mapping(self, volume, mountpoint, device=''):
+        if not device:
+            link_file = LINK_DIR + os.path.sep + volume
+            if os.path.islink(link_file):
+                device = os.path.realpath(link_file)
+            else:
+                LOG.warn("can't find the device of volume %s when attaching volume", volume)
+                return
+        else:
+            if not device.startswith(DEV_DIRECTORY):
+                device = DEV_DIRECTORY + device
+            create_symbolic(device, volume)
         self.volume_device_mapping[volume] = device
+
+    def add_root_mapping(self, volume_id):
+        root_dev_path = os.path.realpath(LINK_DIR + os.path.sep + DOCKER_LINK_NAME)
+        self.add_mapping(volume_id, "/docker", root_dev_path)
 
     def remove_mapping(self, volume):
         if volume in self.volume_device_mapping:
             remove_symbolic(volume)
             del self.volume_device_mapping[volume]
 
-    def attach_volume(self, request, volume, device):
+    def attach_volume(self, request, volume, device, mount_device):
         """ attach volume. """
-        LOG.debug("attach volume %s ==> device %s", volume, device)
-        self.add_mapping(volume, device)
+        LOG.debug("attach volume %s : device %s, mountpoint %s", volume, device, mount_device)
+        self.add_mapping(volume, mount_device, device)
         return None
 
     def detach_volume(self, request, volume):
@@ -98,7 +109,8 @@ class VolumeController(wsgi.Application):
         return webob.Response(status_int=200)
 
 def create_router(mapper):
-    controller = VolumeController()
+    global controller
+    
     mapper.connect('/volumes',
                    controller=controller,
                    action='list',
@@ -111,3 +123,5 @@ def create_router(mapper):
                    controller=controller,
                    action='attach_volume',
                    conditions=dict(method=['POST']))
+    
+controller = VolumeController()
