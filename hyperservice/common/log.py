@@ -158,11 +158,11 @@ log_opts = [
     # a full instance (and could include more information), and other times we
     # are just handed a UUID for the instance.
     cfg.StrOpt('instance_format',
-               default='[instance: %(uuid)s] ',
+               default='[instance: %s] ',
                help='The format for an instance that is passed with the log '
                     'message.'),
     cfg.StrOpt('instance_uuid_format',
-               default='[instance: %(uuid)s] ',
+               default='[instance: %s] ',
                help='The format for an instance UUID that is passed with the '
                     'log message.'),
 ]

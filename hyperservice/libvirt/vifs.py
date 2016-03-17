@@ -104,8 +104,9 @@ class DockerGenericVIFDriver(object):
                                        vm_port_name, run_as_root=True))
             utils.execute('ip', 'link', 'set', br_name, 'up', run_as_root=True)
 
-            utils.execute('brctl', 'addif', br_name, vm_port_name,
-                            run_as_root=True)
+            if not linux_net.device_exists(vm_port_name):
+                utils.execute('brctl', 'addif', br_name, vm_port_name,
+                                run_as_root=True)
 
             # veth
             utils.execute('ip', 'link', 'add', 'name', if_local_name, 'type',
@@ -186,7 +187,6 @@ class DockerGenericVIFDriver(object):
         try:
             utils.execute('ip', 'link', 'set', if_remote_name, 'netns',
                           container_id, run_as_root=True)
-            new_remote_name
             utils.execute('ip', 'netns', 'exec', container_id, 'ip', 'link',
                           'set', 'dev', if_remote_name, 'name', new_remote_name,
                           run_as_root=True)
@@ -199,7 +199,7 @@ class DockerGenericVIFDriver(object):
             utils.execute('ip', 'netns', 'exec', container_id, 'ip', 'link',
                           'set', new_remote_name, 'up', run_as_root=True)
 
-            # Setup MTU on if_remote_name is required if it is a non
+            # Setup MTU on new_remote_name is required if it is a non
             # default value
             mtu = CONF.network_device_mtu
             if vif.get('mtu') is not None:
