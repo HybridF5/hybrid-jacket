@@ -369,7 +369,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                         LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
 
             except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
+                LOG.error("instance %s spawn from volume failed, reason %s"%(vapp_name, e))
 
             # update port bind host
             self._binding_host(context, network_info, instance.uuid)
