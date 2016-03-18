@@ -1,6 +1,0 @@
-#!/bin/bash
-sleeptime=1
-( for((i=0;i<60;i+=sleeptime)) ; do
-  service docker status | grep start && mount |grep /docker &&  docker images |grep ubuntu-upstart && ! pgrep -fl '/usr/bin/python /usr/bin/hyperservice-api' && (  echo starting hyperservice-api $(date) >> /var/log/hyperservice_dog.log; hyperservice-api >/dev/null 2>&1 &) && sleeptime=5;
-  sleep $sleeptime
-done &) 
