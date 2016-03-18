@@ -40,8 +40,8 @@ from nova.virt.jacket.vcloud.vcloud import VCLOUD_STATUS
 from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
 from nova.volume.cinder import API as cinder_api
 from nova.network import neutronv2
-from hyperserviceclient.client import Client
-from hyperserviceclient import errors
+from wormholeclient.client import Client
+from wormholeclient import errors
 
 vcloudapi_opts = [
 
