@@ -17,10 +17,8 @@
 Exception definitions.
 """
 
-import logging
-
 import six
-
+import logging
 from nova.i18n import _, _LE
 
 LOG = logging.getLogger(__name__)

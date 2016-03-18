@@ -13,11 +13,11 @@
 from oslo import messaging
 from oslo.config import cfg
 
-from nova import context as nova_context
-from nova import objects
 from nova import rpc
-from nova.compute import utils as compute_utils
+from nova import objects
+from nova import context as nova_context
 from nova.objects import base as objects_base
+from nova.compute import utils as compute_utils
 from nova.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)

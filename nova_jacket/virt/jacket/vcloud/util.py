@@ -25,20 +25,21 @@ Collection of classes to handle image upload/download to/from Image service
 (like Glance image storage and retrieval service) from/to ESX/ESXi server.
 
 """
+import thread
+import urllib2
+
+from eventlet import queue
 from eventlet import event
 from eventlet import greenthread
-from eventlet import queue
 
-from nova.i18n import _
 from nova import image
-
+from nova.i18n import _
 from nova import exception
 from nova.openstack.common import log as logging
-import urllib2
-import thread
 
 
 LOG = logging.getLogger(__name__)
+
 IMAGE_API = image.API()
 IO_THREAD_SLEEP_TIME = .01
 GLANCE_POLL_INTERVAL = 5

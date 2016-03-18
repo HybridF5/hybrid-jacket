@@ -26,33 +26,29 @@ Collection of classes to handle image upload/download to/from Image service
 """
 
 
-# import six.moves.urllib.parse as urlparse
-from eventlet import event
-from eventlet import greenthread
-from eventlet import queue
-from eventlet import timeout
-
-from cinder import exception
-from cinder.i18n import _
-from cinder.openstack.common import log as logging
-
-import contextlib
 import os
 import tempfile
-
+import contextlib
 from oslo.config import cfg
 
-from cinder import exception
-from cinder.openstack.common import fileutils
-from cinder.openstack.common import imageutils
-# from cinder.openstack.common import processutils
-from cinder.openstack.common import timeutils
-from cinder.openstack.common import units
-from cinder import utils
-from cinder.volume import utils as volume_utils
+from eventlet import event
+from eventlet import queue
+from eventlet import timeout
+from eventlet import greenthread
 
+from cinder import utils
+from cinder.i18n import _
+from cinder import exception
+from cinder.openstack.common import units
+from cinder.openstack.common import fileutils
+from cinder.openstack.common import timeutils
+from cinder.openstack.common import imageutils
+from cinder.volume import utils as volume_utils
+from cinder.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
+
+
 IO_THREAD_SLEEP_TIME = .01
 GLANCE_POLL_INTERVAL = 5
 

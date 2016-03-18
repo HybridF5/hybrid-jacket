@@ -58,13 +58,15 @@ Eventlet:
 """
 
 import os
+import six
+import time
 import select
 import socket
-import time
-
 import paramiko
-import six
+
 from cinder.openstack.common import log as logging
+
+
 LOG = logging.getLogger(__name__)
 
 

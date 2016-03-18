@@ -17,12 +17,12 @@
 Exception definitions.
 """
 
-import logging
-
 import six
+import logging
 
 from cinder.i18n import _, _LE, _LW
 from cinder import exception
+
 
 LOG = logging.getLogger(__name__)
 
@@ -156,8 +156,9 @@ class DuplicateName(VCloudDriverException):
 class SSLError(VCloudDriverException):
     msg_fmt = _("SSL connect error")
 
-class BaseVmError(VCloudDriverException):
-    msg_fmt = _("Base vm error")
+class BaseVMError(VCloudDriverException):
+    msg_fmt = _("Base VM error")
+
 
 # Populate the fault registry with the exceptions that have
 # special treatment.

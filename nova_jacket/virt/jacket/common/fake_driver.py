@@ -16,10 +16,9 @@
 A Fake Nova Driver implementing all method with logs
 """
 
+from nova.virt import driver
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova.virt import driver
-
 
 LOG = logging.getLogger(__name__)
 

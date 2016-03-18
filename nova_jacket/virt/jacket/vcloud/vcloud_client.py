@@ -1,16 +1,15 @@
-
-import subprocess
 import time
+import subprocess
 
+from oslo.config import cfg
+from oslo.utils import units
 
 from nova import exception
 from nova.openstack.common import log as logging
+from nova.virt.jacket.vcloud.vcloud import exceptions
 from nova.virt.jacket.vcloud.vcloud import RetryDecorator
 from nova.virt.jacket.vcloud.vcloud import VCloudAPISession
-from nova.virt.jacket.vcloud.vcloud import exceptions
-from oslo.config import cfg
-from oslo.utils import units
-from setuptools.command.egg_info import overwrite_arg
+
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
@@ -56,8 +55,7 @@ class VCloudClient(object):
         return self._session.host_ip
 
     def _get_vcloud_vdc(self):
-        return self._invoke_api("get_vdc",
-                                self._session.vdc)
+        return self._invoke_api("get_vdc", self._session.vdc)
 
     def _get_vcloud_vapp(self, vapp_name):
         the_vapp = self._invoke_api("get_vapp",

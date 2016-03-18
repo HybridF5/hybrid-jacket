@@ -58,12 +58,15 @@ Eventlet:
 """
 
 import os
+import six
+import time
 import select
 import socket
-import time
 import paramiko
-import six
+
 from nova.openstack.common import log as logging
+
+
 log = logging.getLogger(__name__)
 
 class SSHError(Exception):

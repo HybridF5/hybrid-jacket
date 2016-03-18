@@ -17,31 +17,32 @@ A connection to the VMware vCloud platform.
 """
 
 import os
-import subprocess
-import shutil
 import time
+import shutil
 import urllib2
-
+import sshclient
+import subprocess
 from oslo.config import cfg
 
-import sshclient
+from nova import image
+from nova.i18n import _
+from nova.network import neutronv2
 from nova.compute import power_state
 from nova.compute import task_states
-from nova import image
+from nova.openstack.common import fileutils
+from nova.volume.cinder import API as cinder_api
 from nova.openstack.common import log as logging
-from nova.openstack.common import fileutils as fileutils
-from nova.i18n import _
+
+from nova.virt.jacket.vcloud import util
+from nova.virt.jacket.vcloud import constants
 from nova.virt.jacket.common import fake_driver
 from nova.virt.jacket.common import common_tools
 from nova.virt.jacket.vcloud import hyper_agent_api
-from nova.virt.jacket.vcloud import constants
-from nova.virt.jacket.vcloud import util
 from nova.virt.jacket.vcloud.vcloud import VCLOUD_STATUS
 from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
-from nova.volume.cinder import API as cinder_api
-from nova.network import neutronv2
-from wormholeclient.client import Client
+
 from wormholeclient import errors
+from wormholeclient.client import Client
 
 vcloudapi_opts = [
 
@@ -337,7 +338,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
                     if mount_device == root_device_name:
-                        continue;
+                        continue
 
                     volume_id = bdm['connection_info']['data']['volume_id']
                     volume_name = bdm['connection_info']['data']['display_name']
@@ -492,7 +493,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
                     if mount_device == root_device_name:
-                        continue;
+                        continue
 
                     volume_id = bdm['connection_info']['data']['volume_id']
                     volume_name = bdm['connection_info']['data']['display_name']
