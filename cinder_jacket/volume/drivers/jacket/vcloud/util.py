@@ -25,8 +25,6 @@ Collection of classes to handle image upload/download to/from Image service
 
 """
 
-from oslo.config import cfg
-
 from eventlet import event
 from eventlet import queue
 from eventlet import timeout
@@ -47,13 +45,6 @@ PROGRESS_REPORT_THREAD_SLEEP_TIME =3
 READ_CHUNKSIZE = 65536
 QUEUE_BUFFER_SIZE = 10
 
-
-image_helper_opt = [cfg.StrOpt('image_conversion_dir',
-                               default='$state_path/conversion',
-                               help='Directory used for temporary storage '
-                                    'during image conversion'), ]
-CONF = cfg.CONF
-CONF.register_opts(image_helper_opt)
 
 class GlanceFileRead(object):
     """Glance file read handler class."""

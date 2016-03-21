@@ -178,6 +178,14 @@ class VCloudClient(object):
                 "delete vapp failed, task: %s" % task)
         self._session.wait_for_task(task)
 
+    def reboot_vapp(self, vapp_name):
+        the_vapp = self._get_vcloud_vapp(vapp_name)
+        task = self._invoke_vapp_api(the_vapp, "reboot")
+        if not task:
+            raise exception.CinderException(
+                "reboot vapp failed, task: %s" % task)
+        self._session.wait_for_task(task)
+
     def get_vapp_ip(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
         vms_network_info = self._invoke_vapp_api(the_vapp, "get_vms_network_info")

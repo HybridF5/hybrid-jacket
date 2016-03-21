@@ -168,7 +168,7 @@ class VCloudClient(object):
         self._session.wait_for_task(task)
         the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
 
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)        
+        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
 
     def delete_vapp(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -261,6 +261,10 @@ class VCloudClient(object):
                 task)
 
         self._session.wait_for_task(task)
+
+    def get_disks(self):
+        disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
+        return disks
 
     def modify_vm_cpu(self, vapp, cpus):
         result, task = self._session.invoke_api(vapp, "modify_vm_cpu", cpus)
@@ -381,8 +385,7 @@ class VCloudClient(object):
                 "Unable to upload meta-data iso file %s" % vapp_name)
         return self._invoke_api("get_media",
                                             self._metadata_iso_catalog,
-                                            media_name)        
-         
+                                            media_name)
 
     def delete_metadata_iso(self, vapp_name):
         media_name = "metadata_%s.iso" % vapp_name

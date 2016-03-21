@@ -25,9 +25,6 @@ Collection of classes to handle image upload/download to/from Image service
 
 """
 
-import thread
-import urllib2
-
 from eventlet import queue
 from eventlet import event
 from eventlet import greenthread
