@@ -1074,6 +1074,3 @@ class VCloudAPISession(object):
     def _get_error_message(self, lease):
         """Get error message associated with the given lease."""
         return "Unknown"
-
-
-

@@ -67,7 +67,8 @@ import paramiko
 from nova.openstack.common import log as logging
 
 
-log = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
+
 
 class SSHError(Exception):
     pass
@@ -166,7 +167,7 @@ class SSH(object):
 
         if isinstance(cmd, (list, tuple)):
             cmd = " ".join(six.moves.shlex_quote(str(p)) for p in cmd)
-
+        LOG.debug('Running cmd (subprocess): %s', cmd)
         transport = client.get_transport()
         session = transport.open_session()
         session.exec_command(cmd)
@@ -188,14 +189,14 @@ class SSH(object):
 
             if session.recv_ready():
                 data = session.recv(4096)
-                log.debug("stdout: %r" % data)
+                LOG.debug("stdout: %r" % data)
                 if stdout is not None:
                     stdout.write(data)
                 continue
 
             if session.recv_stderr_ready():
                 stderr_data = session.recv_stderr(4096)
-                log.debug("stderr: %r" % stderr_data)
+                LOG.debug("stderr: %r" % stderr_data)
                 if stderr is not None:
                     stderr.write(stderr_data)
                 continue
@@ -210,7 +211,7 @@ class SSH(object):
                             writes = []
                             continue
                     sent_bytes = session.send(data_to_send)
-                    log.debug("sent: %s" % data_to_send[:sent_bytes])
+                    LOG.debug("sent: %s" % data_to_send[:sent_bytes])
                     data_to_send = data_to_send[sent_bytes:]
 
             if session.exit_status_ready():
@@ -258,7 +259,7 @@ class SSH(object):
             try:
                 return self.execute("uname")
             except (socket.error, SSHError) as e:
-                log.debug("Ssh is still unavailable: %r" % e)
+                LOG.debug("Ssh is still unavailable: %r" % e)
                 time.sleep(interval)
             if time.time() > (start_time + timeout):
                 raise SSHTimeout(("Timeout waiting for '%s'") % self.host)

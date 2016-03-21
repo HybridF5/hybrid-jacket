@@ -2,7 +2,6 @@ import time
 import subprocess
 from oslo.config import cfg
 from oslo.utils import units
-from setuptools.command.egg_info import overwrite_arg
 
 from cinder import exception
 from cinder.openstack.common import log as logging
@@ -81,7 +80,6 @@ class VCloudClient(object):
                  (method_name, args, kwargs, res))
         return res
 
-
     def get_disk_ref(self, disk_name):
         disk_refs = self._invoke_api('get_diskRefs',
                                      self._get_vcloud_vdc())
@@ -93,13 +91,9 @@ class VCloudClient(object):
         elif len(link) > 1:
             return False, 'more than one disks found with that name.'
 
-    def get_disks(self):        
-        disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
-        return disks
-
     def power_off_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=60,
-                        exceptions=exceptions.BaseVMError)
+                        exceptions=exception.CinderException)
         def _power_off(vapp_name):
             expected_vapp_status = 8
             the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -109,7 +103,7 @@ class VCloudClient(object):
 
             task_stop = self._invoke_vapp_api(the_vapp, "undeploy")
             if not task_stop:
-                raise exceptions.BaseVMError(
+                raise exception.CinderException(
                     "power off vapp failed, task")
             self._session.wait_for_task(task_stop)
 
@@ -134,7 +128,7 @@ class VCloudClient(object):
 
     def power_on_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=60,
-                        exceptions=exceptions.BaseVMError)
+                        exceptions=exception.CinderException)
         def _power_on(vapp_name):
             the_vapp = self._get_vcloud_vapp(vapp_name)
 
@@ -145,7 +139,7 @@ class VCloudClient(object):
 
             task = self._invoke_vapp_api(the_vapp, "poweron")
             if not task:
-                raise exceptions.BaseVMError("power on vapp failed, task")
+                raise exception.CinderException("power on vapp failed, task")
             self._session.wait_for_task(task)
 
             retry_times = 60
@@ -180,7 +174,7 @@ class VCloudClient(object):
         the_vapp = self._get_vcloud_vapp(vapp_name)
         task = self._invoke_vapp_api(the_vapp, "delete")
         if not task:
-            raise exceptions.BaseVMError(
+            raise exception.CinderException(
                 "delete vapp failed, task: %s" % task)
         self._session.wait_for_task(task)
 
@@ -193,9 +187,9 @@ class VCloudClient(object):
             return None
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
+        result, resp = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
         if result:
-            self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
+            self._session.wait_for_task(resp.get_Tasks().get_Task()[0])
             LOG.info('Created volume : %s sucess', disk_name)
         else:
             err_msg = 'Unable to create volume, reason: %s' % resp
@@ -215,12 +209,12 @@ class VCloudClient(object):
 
     def attach_disk_to_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=60,
-                        exceptions=exceptions.BaseVMError)
+                        exceptions=exception.CinderException)
         def _attach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)
             task = the_vapp.attach_disk_to_vm(disk_ref)
             if not task:
-                raise exceptions.BaseVMError(
+                raise exception.CinderException(
                     "Unable to attach disk to vm %s" % vapp_name)
             else:
                 self._session.wait_for_task(task)
@@ -230,12 +224,12 @@ class VCloudClient(object):
 
     def detach_disk_from_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=60,
-                        exceptions=exceptions.BaseVMError)
+                        exceptions=exception.CinderException)
         def _detach_disk(vapp_name, disk_ref):
             the_vapp = self._get_vcloud_vapp(vapp_name)
             task = the_vapp.detach_disk_from_vm(disk_ref)
             if not task:
-                raise exceptions.BaseVMError(
+                raise exception.CinderException(
                     "Unable to detach disk from vm %s" % vapp_name)
             else:
                 self._session.wait_for_task(task)
@@ -259,3 +253,7 @@ class VCloudClient(object):
                 task)
 
         self._session.wait_for_task(task)
+
+    def get_disks(self):
+        disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
+        return disks

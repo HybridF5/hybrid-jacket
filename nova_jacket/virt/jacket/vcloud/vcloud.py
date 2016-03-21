@@ -34,7 +34,9 @@ from pyvcloud.schema.vcd.v1_5.schemas.vcloud.networkType import IpScopeType,\
     OrgVdcNetworkType, ReferenceType, NetworkConfigurationType, \
     IpScopesType, IpRangesType, IpRangeType, DhcpPoolServiceType
 
+
 LOG = logging.getLogger(__name__)
+
 
 class VCLOUD_STATUS:
     """
@@ -1072,6 +1074,3 @@ class VCloudAPISession(object):
     def _get_error_message(self, lease):
         """Get error message associated with the given lease."""
         return "Unknown"
-
-
-

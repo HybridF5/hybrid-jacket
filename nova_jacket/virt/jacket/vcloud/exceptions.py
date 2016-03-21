@@ -19,7 +19,10 @@ Exception definitions.
 
 import six
 import logging
-from nova.i18n import _, _LE
+
+from nova.i18n import _, _LE, _LW
+from nova import exception
+
 
 LOG = logging.getLogger(__name__)
 
@@ -37,7 +40,7 @@ TASK_IN_PROGRESS = 'TaskInProgress'
 DUPLICATE_NAME = 'DuplicateName'
 
 
-class VCloudDriverException(Exception):
+class VCloudDriverException(exception.NovaException):
 
     """Base VCloud Driver Exception
 
@@ -152,7 +155,6 @@ class DuplicateName(VCloudDriverException):
 
 class SSLError(VCloudDriverException):
     msg_fmt = _("SSL connect error")
-
 
 # Populate the fault registry with the exceptions that have
 # special treatment.

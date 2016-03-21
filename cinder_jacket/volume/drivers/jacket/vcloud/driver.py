@@ -19,7 +19,7 @@ from cinder.volume import volume_types
 from cinder.volume.drivers.jacket.vcloud import util
 from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
 from cinder.volume.drivers.jacket.vcloud.vcloud_client import VCloudClient
-from cinder.volume.drivers.jacket.vcloud import sshutils as sshclient
+from cinder.volume.drivers.jacket.vcloud import sshclient
 
 from wormholeclient import errors
 from wormholeclient.client import Client

@@ -1,4 +1,3 @@
-from __future__ import division
 '''
 Created on 2015.3.11
 
@@ -25,6 +24,7 @@ Collection of classes to handle image upload/download to/from Image service
 (like Glance image storage and retrieval service) from/to ESX/ESXi server.
 
 """
+
 import thread
 import urllib2
 
@@ -78,13 +78,12 @@ class GlanceFileRead(object):
 
 
 class HybridFileHandle(file):
-    
+
     def __init__(self, *args):
         self.file = open(*args)
-    
+
     def read(self, *args, **kwargs):
         return self.file.read(READ_CHUNKSIZE)
-
 
 class GlanceWriteThread(object):
     """Ensures that image data is written to in the glance client and that
@@ -183,7 +182,7 @@ class IOThread(object):
             while self._running:
                 try:
                     data = self.input.read(READ_CHUNKSIZE)
-                    
+
                     if not data:
                         self.stop()
                         self.done.send(True)
@@ -242,7 +241,7 @@ class ThreadSafePipe(queue.LightQueue):
     def close(self):
         """A place-holder to maintain consistency."""
         pass
-        
+
 def start_transfer(context, read_file_handle, data_size,
         write_file_handle=None, image_id=None, image_meta=None,task_state=None,instance=None):
     """Start the data transfer from the reader to the writer.
@@ -281,7 +280,7 @@ def start_transfer(context, read_file_handle, data_size,
     if  task_state:
         progressReportThread = ProgressReportThread(thread_safe_pipe,instance,data_size,task_state)
         progressReportThread.start()
-        
+
     try:
         # Wait on the read and write events to signal their end
         read_event.wait()
@@ -292,7 +291,7 @@ def start_transfer(context, read_file_handle, data_size,
         # waiting.
         read_thread.stop()
         write_thread.stop()
-        
+
         if progressReportThread:
             progressReportThread.stop()
 
@@ -306,25 +305,6 @@ def start_transfer(context, read_file_handle, data_size,
         if write_file_handle:
             write_file_handle.close()
 
-def download_file_in_new_thread(remote_url, local_filename):
-
-
-    def _download_file(remote_url, local_filename):
-        chunk_size = 1024
-        f = urllib2.urlopen(remote_url)
-        running = True
-        with open(local_filename, "wb") as file:
-            while running:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    running = False
-                else:
-                    file.write(chunk)
-                    file.flush()
-
-    thread.start_new_thread(_download_file,remote_url, local_filename)
-    
-    
 class ProgressReportThread(object):
     """Class that report the task progress"""
     

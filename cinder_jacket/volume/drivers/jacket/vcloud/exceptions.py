@@ -156,10 +156,6 @@ class DuplicateName(VCloudDriverException):
 class SSLError(VCloudDriverException):
     msg_fmt = _("SSL connect error")
 
-class BaseVMError(VCloudDriverException):
-    msg_fmt = _("Base VM error")
-
-
 # Populate the fault registry with the exceptions that have
 # special treatment.
 _fault_classes_registry = {
