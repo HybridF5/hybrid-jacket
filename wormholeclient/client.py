@@ -16,6 +16,7 @@ class Client(
     api.ContainerApiMixin,
     api.VolumeApiMixin,
     api.NetworkApiMixin,
+    api.TaskApiMixin,
     api.PersonalityApiMixin):
     def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS):
         super(Client, self).__init__()

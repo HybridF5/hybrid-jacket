@@ -11,7 +11,6 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-"""Wrapper for keystone.common.config that configures itself on import."""
 
 import os
 
@@ -24,13 +23,6 @@ from wormhole import versions
 _DEFAULT_SQL_CONNECTION = 'sqlite:///' + paths.state_path_def('wormhole.sqlite')
 
 CONF = cfg.CONF
-
-opts = [
-    cfg.IntOpt('port',
-               default=7127, help='Port of wormhole rest service.'),
-    ]
-
-CONF.register_opts(opts)
 
 
 def parse_args(argv, default_config_files=None):

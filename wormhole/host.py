@@ -1,7 +1,7 @@
 import webob
 from wormhole import exception
 from wormhole import wsgi
-from wormhole import utils
+from wormhole.common import utils
 from wormhole.common import log
 from oslo.utils import importutils
 
@@ -16,12 +16,6 @@ CONF = cfg.CONF
 
 class HostController(wsgi.Application):
         
-    def list_volume(self, request):
-        return {}
-
-    def attach_volume(self, request, body):
-        return webob.Response(status_int=204)
-
     def personality(self, request, dst_path, file_data):
         dst_dir = os.path.dirname(dst_path)
         if not os.path.isdir(dst_dir):
@@ -38,15 +32,6 @@ class HostController(wsgi.Application):
 
 def create_router(mapper):
     controller = HostController()
-    mapper.connect('/host/volume',
-                   controller=controller,
-                   action='list_volume',
-                   conditions=dict(method=['GET']))
-
-    mapper.connect('/host/volume/action',
-                   controller=controller,
-                   action='attach_volume',
-                   conditions=dict(method=['POST']))
 
     mapper.connect('/service/personality',
                    controller=controller,

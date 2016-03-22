@@ -37,7 +37,7 @@ from wormhole.common import log as logging
 from wormhole.common import processutils
 from wormhole.common import timeutils
 from wormhole import paths
-from wormhole import utils
+from wormhole.common import utils
 
 LOG = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ from wormhole.common import processutils
 from wormhole.common import log
 
 from wormhole import exception
-from wormhole import utils
+from wormhole.common import utils
 
 from wormhole.i18n import _
 

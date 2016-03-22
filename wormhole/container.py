@@ -6,10 +6,10 @@ from wormhole.volumes import controller as volume
 
 from wormhole.common import log
 from wormhole.common import importutils
-from wormhole import utils
+from wormhole.common import utils
 from wormhole.i18n import _
 from wormhole.docker_client import DockerHTTPClient
-from wormhole.libvirt import network
+from wormhole.net_util import network
 
 import functools
 import uuid

@@ -18,7 +18,7 @@
 from wormhole.common import processutils
 from wormhole.common import log as logging
 from wormhole import exception
-from wormhole import utils
+from wormhole.common import utils
 from wormhole.i18n import _
 
 from oslo.config import cfg
@@ -68,7 +68,7 @@ class DockerGenericVIFDriver(object):
 
         Create a per-VIF linux bridge, then link that bridge to the OVS
         integration bridge via an ovs internal port device. Then boot the
-        VIF on the linux bridge using standard libvirt mechanisms.
+        VIF on the linux bridge using standard net_util mechanisms.
         """
         if_local_name = 'tap%s' % vif['id'][:11]
         if_remote_name = 'ns%s' % vif['id'][:11]

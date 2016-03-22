@@ -14,6 +14,15 @@ from wormhole import wsgi
 
 CONF = cfg.CONF
 
+opts = [
+    cfg.IntOpt('listen_port',
+               default=7127, help='Port of wormhole rest service.'),
+    cfg.StrOpt('listen_ip',
+               default='0.0.0.0', help='Listen ip of wormhole rest service.'),
+    ]
+
+CONF.register_opts(opts)
+
 class WSGIService(object):
     """Provides ability to launch API from a 'paste' configuration."""
 
@@ -29,8 +38,8 @@ class WSGIService(object):
         self.manager = self._get_manager()
         self.loader = loader or wsgi.Loader()
         self.app = self.loader.load_app(name)
-        self.host = '0.0.0.0'
-        self.port = CONF.get('port', 7127)
+        self.host = CONF.get('listen_ip')
+        self.port = CONF.get('listen_port')
         self.workers = 1
         if self.workers and self.workers < 1:
             worker_name = '%s_workers' % name

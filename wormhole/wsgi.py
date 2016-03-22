@@ -36,7 +36,7 @@ import webob.dec
 import webob.exc
 
 from wormhole.common import jsonutils
-from wormhole import utils
+from wormhole.common import utils
 from wormhole import exception
 from wormhole.i18n import _
 from wormhole.common import excutils

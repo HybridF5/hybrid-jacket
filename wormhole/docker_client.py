@@ -32,7 +32,7 @@ docker_opts = [
                help='Location of TLS private key file for '
                     'securing docker api requests (tlskey).'),
     cfg.StrOpt('vif_driver',
-               default='wormhole.libvirt.vifs.DockerGenericVIFDriver'),
+               default='wormhole.net_util.vifs.DockerGenericVIFDriver'),
     cfg.BoolOpt('inject_key',
                 default=False,
                 help='Inject the ssh public key at boot time'),
