@@ -1,16 +1,13 @@
-
-import subprocess
 import time
-
+import subprocess
+from oslo.config import cfg
+from oslo.utils import units
 
 from nova import exception
 from nova.openstack.common import log as logging
+from nova.virt.jacket.vcloud.vcloud import exceptions
 from nova.virt.jacket.vcloud.vcloud import RetryDecorator
 from nova.virt.jacket.vcloud.vcloud import VCloudAPISession
-from nova.virt.jacket.vcloud.vcloud import exceptions
-from oslo.config import cfg
-from oslo.utils import units
-from setuptools.command.egg_info import overwrite_arg
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
@@ -56,8 +53,7 @@ class VCloudClient(object):
         return self._session.host_ip
 
     def _get_vcloud_vdc(self):
-        return self._invoke_api("get_vdc",
-                                self._session.vdc)
+        return self._invoke_api("get_vdc", self._session.vdc)
 
     def _get_vcloud_vapp(self, vapp_name):
         the_vapp = self._invoke_api("get_vapp",
@@ -65,7 +61,6 @@ class VCloudClient(object):
                                     vapp_name)
 
         if not the_vapp:
-            #raise exception.NovaException("can't find the vapp")
             LOG.info("can't find the vapp %s" % vapp_name)
             return None
         else:
@@ -95,9 +90,6 @@ class VCloudClient(object):
             return False, 'disk not found'
         elif len(link) > 1:
             return False, 'more than one disks found with that name.'
-
-    def get_vcloud_vapp_status(self, vapp_name):
-        return self._get_vcloud_vapp(vapp_name).me.status
 
     def power_off_vapp(self, vapp_name):
         @RetryDecorator(max_retry_count=60,
@@ -176,7 +168,7 @@ class VCloudClient(object):
         self._session.wait_for_task(task)
         the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
 
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)        
+        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
 
     def delete_vapp(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -200,43 +192,17 @@ class VCloudClient(object):
         if vms_network_info:
             return vms_network_info[0][0]['ip']
         else:
-            return None    
-
-    def query_vmdk_url(self, vapp_name):
-        # 0. shut down the app first
-        try:
-            the_vapp = self.power_off_vapp(vapp_name)
-        except:
-            LOG.error('power off failed')
-
-        # 1.enable download.
-        task = self._invoke_vapp_api(the_vapp, 'enableDownload')
-        if not task:
-            raise exception.NovaException(
-                "enable vmdk file download failed, task:")
-        self._session.wait_for_task(task)
-
-        # 2.get vapp info and ovf descriptor
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-
-        ovf = self._invoke_vapp_api(the_vapp, 'get_ovf_descriptor')
-
-        # 3.get referenced file url
-        referenced_file_url = self._invoke_vapp_api(the_vapp,
-                                                    'get_referenced_file_url',
-                                                    ovf)
-        if not referenced_file_url:
-            raise exception.NovaException(
-                "get vmdk file url failed")
-        return referenced_file_url
+            return None
 
     def create_volume(self, disk_name, disk_size):
-        result, disk = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size)*units.Gi)
+        result, resp = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
         if result:
-            self._session.wait_for_task(disk.get_Tasks().get_Task()[0])
+            self._session.wait_for_task(resp.get_Tasks().get_Task()[0])
             LOG.info('Created volume : %s sucess', disk_name)
         else:
-            raise exception.NovaException("Unable to create volume %s" % disk_name)
+            err_msg = 'Unable to create volume, reason: %s' % resp
+            LOG.error(err_msg)
+            raise exception.NovaException(err_msg)
 
     def delete_volume(self, disk_name):
         result, resp = self._session.invoke_api(self._session.vca, "delete_disk", self.vdc, disk_name)
@@ -247,8 +213,8 @@ class VCloudClient(object):
             if resp == 'disk not found':
                 LOG.warning('delete_volume: unable to find volume %(name)s', {'name': disk_name})
             else:
-                raise exception.NovaException("Unable to delete volume %s" % disk_name)         
-    
+                raise exception.NovaException("Unable to delete volume %s" % disk_name)
+
     def attach_disk_to_vm(self, vapp_name, disk_ref):
         @RetryDecorator(max_retry_count=60,
                         exceptions=exception.NovaException)
@@ -278,16 +244,80 @@ class VCloudClient(object):
                 return True
 
         return _detach_disk(vapp_name, disk_ref)
-        
-    def modify_vm_cpu(self, vapp_name, cpus):
-        the_vapp = self._get_vcloud_vapp(vapp_name)
-        task = the_vapp.modify_vm_cpu(vapp_name, cpus)
+
+    def get_network_configs(self, network_names):
+        return self._session.invoke_api(self._session.vca, "get_network_configs", self.vdc, network_names)
+
+    def get_network_connections(self, vapp, network_names):
+        return self._session.invoke_api(vapp, "get_network_connections", network_names)
+
+    def update_vms_connections(self, vapp, network_connections):
+        result, task = self._session.invoke_api(vapp, "update_vms_connections", network_connections)
+
+        # check the task is success or not
+        if not result:
+            raise exceptions.VCloudDriverException(
+                "Update_vms_connections error, task:" +
+                task)
+
+        self._session.wait_for_task(task)
+
+    def get_disks(self):
+        disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
+        return disks
+
+    def modify_vm_cpu(self, vapp, cpus):
+        result, task = self._session.invoke_api(vapp, "modify_vm_cpu", cpus)
+
+        # check the task is success or not
+        if not result:
+            raise exceptions.VCloudDriverException(
+                "Modify_vm_cpu error, task:" +
+                task)
+
+        self._session.wait_for_task(task)
+
+    def modify_vm_memory(self, vapp, new_size):
+        result, task = self._session.invoke_api(vapp, "modify_vm_memory", new_size)
+
+        # check the task is success or not
+        if not result:
+            raise exceptions.VCloudDriverException(
+                "Modify_vm_memory error, task:" +
+                task)
+
+        self._session.wait_for_task(task)
+
+    def get_vcloud_vapp_status(self, vapp_name):
+        return self._get_vcloud_vapp(vapp_name).me.status
+
+    def query_vmdk_url(self, vapp_name):
+        # 0. shut down the app first
+        try:
+            the_vapp = self.power_off_vapp(vapp_name)
+        except:
+            LOG.error('power off failed')
+
+        # 1.enable download.
+        task = self._invoke_vapp_api(the_vapp, 'enableDownload')
         if not task:
             raise exception.NovaException(
-                "Unable to modify vm %s cpu" % vapp_name)
-        else:
-            self._session.wait_for_task(task)
-            return True
+                "enable vmdk file download failed, task:")
+        self._session.wait_for_task(task)
+
+        # 2.get vapp info and ovf descriptor
+        the_vapp = self._get_vcloud_vapp(vapp_name)
+
+        ovf = self._invoke_vapp_api(the_vapp, 'get_ovf_descriptor')
+
+        # 3.get referenced file url
+        referenced_file_url = self._invoke_vapp_api(the_vapp,
+                                                    'get_referenced_file_url',
+                                                    ovf)
+        if not referenced_file_url:
+            raise exception.NovaException(
+                "get vmdk file url failed")
+        return referenced_file_url
 
     def insert_media(self, vapp_name, iso_file):
         the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -355,8 +385,7 @@ class VCloudClient(object):
                 "Unable to upload meta-data iso file %s" % vapp_name)
         return self._invoke_api("get_media",
                                             self._metadata_iso_catalog,
-                                            media_name)        
-         
+                                            media_name)
 
     def delete_metadata_iso(self, vapp_name):
         media_name = "metadata_%s.iso" % vapp_name
@@ -367,43 +396,3 @@ class VCloudClient(object):
         if not result:
             raise exception.NovaException(
                 "delete metadata iso failed vapp_name:%s" % vapp_name)
-
-    def get_network_configs(self, network_names):
-        return self._session.invoke_api(self._session.vca, "get_network_configs", self.vdc, network_names)
-
-    def get_network_connections(self, vapp, network_names):
-        return self._session.invoke_api(vapp, "get_network_connections", network_names)
-
-    def update_vms_connections(self, vapp, network_connections):
-        result, task = self._session.invoke_api(vapp, "update_vms_connections", network_connections)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Update_vms_connections error, task:" +
-                task)
-
-        self._session.wait_for_task(task)
-
-    def modify_vm_cpu(self, vapp, cpus):
-        result, task = self._session.invoke_api(vapp, "modify_vm_cpu", cpus)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Modify_vm_cpu error, task:" +
-                task)
-
-        self._session.wait_for_task(task)
-
-    def modify_vm_memory(self, vapp, new_size):
-        result, task = self._session.invoke_api(vapp, "modify_vm_memory", new_size)
-
-        # check the task is success or not
-        if not result:
-            raise exceptions.VCloudDriverException(
-                "Modify_vm_memory error, task:" +
-                task)
-
-        self._session.wait_for_task(task)
-       

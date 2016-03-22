@@ -28,8 +28,7 @@ IMPORTING = 'importing'     # importing ovf package to vcloud director
 VM_CREATING = 'vm_creating'       # create and power on vm  
 
 # TASK STATES FOR INSATCNE MIGRATION
-PROVIDER_PREPARING = 'provider_preparing'
 EXPORTING = 'exporting'
 UPLOADING = 'uploading'
-
+PROVIDER_PREPARING = 'provider_preparing'
 

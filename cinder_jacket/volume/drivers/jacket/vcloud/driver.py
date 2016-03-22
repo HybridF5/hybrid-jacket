@@ -1,33 +1,29 @@
-import contextlib
-import distutils.version as dist_version  # pylint: disable=E0611
 import os
 import time
-import tempfile
 import shutil
-import subprocess
 import urllib2
 import traceback
-
-import cinder.compute.nova as nova
-from cinder.image import image_utils
+import subprocess
 from oslo.config import cfg
-from cinder import exception
+
 from cinder import utils
 from cinder.i18n import _
-# from cinder.openstack.common import excutils
+from cinder import exception
+import cinder.compute.nova as nova
+from cinder.image import image_utils
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import log as logging
-# from cinder.openstack.common import units
-# from cinder.openstack.common import uuidutils
+
 from cinder.volume import driver
 from cinder.volume import volume_types
 from cinder.volume.drivers.jacket.vcloud import util
 from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
 from cinder.volume.drivers.jacket.vcloud.vcloud_client import VCloudClient
-from cinder.volume.drivers.jacket.vcloud import sshutils as sshclient
+from cinder.volume.drivers.jacket.vcloud import sshclient
 
+from wormholeclient import errors
+from wormholeclient.client import Client
 from keystoneclient.v2_0 import client as kc
-
 
 
 vcloudapi_opts = [
@@ -77,7 +73,7 @@ vcloudapi_opts = [
                help='Service type for connection to VMware VCD '
                'host.'),
     cfg.IntOpt('vcloud_api_retry_count',
-               default=2,
+               default=12,
                help='Api retry count for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_ovs_ethport',
@@ -90,6 +86,19 @@ vcloudapi_opts = [
     cfg.StrOpt('vcloud_volumes_dir',
                default='/vcloud/volumes',
                help='the directory of volume files'),
+
+    cfg.StrOpt('base_image_id',
+               help='The base image id which hybrid vm use.'),
+    cfg.StrOpt('base_image_name',
+               default = 'ubuntu-upstart',
+               help='The base image name which hybrid vm use.'),
+    cfg.StrOpt('hybrid_service_port',
+               default = '7127',
+               help='The port of the hybrid service.'),
+    cfg.StrOpt('provider_base_network_name',
+               help='The provider network name which base provider network use.'),
+    cfg.StrOpt('provider_tunnel_network_name',
+               help='The provider network name which tunnel provider network use.'),
 ]
 
 vcloudvgw_opts = [
@@ -148,7 +157,37 @@ IMAGE_TRANSFER_TIMEOUT_SECS = 300
 VGW_URLS = ['vgw_url']
 
 
+def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, exceptions=()):
+    def handle_func(func):
+        def handle_args(*args, **kwargs):
+            retry_count = 0
+            sleep_time = 0
+            def _sleep(retry_count, sleep_time):
+                retry_count += 1
+                if max_retry_count == -1 or retry_count < max_retry_count:
+                    sleep_time += inc_sleep_time
+                    if sleep_time > max_sleep_time:
+                        sleep_time = max_sleep_time
 
+                    time.sleep(sleep_time)
+                    return retry_count, sleep_time
+                else:
+                    return retry_count, sleep_time
+            while (max_retry_count == -1 or retry_count < max_retry_count):
+                try:
+                    result = func(*args, **kwargs)
+                    if not result:
+                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                    else:
+                        return result
+                except exceptions:
+                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
+            
+            if max_retry_count != -1 and retry_count >= max_retry_count:
+                LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
+                                  {'name': func, 'retry_count': retry_count, 'max_retry_count': max_retry_count})
+        return handle_args
+    return handle_func
 
 
 class VMwareVcloudVolumeDriver(driver.VolumeDriver):
@@ -240,9 +279,48 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
 
-        #self.create_volume(volume)
-        #to do
+        volume_name = volume['display_name']
+        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],volume_name)
 
+        LOG.debug('Creating volume %(name)s of size %(size)s Gb',
+                  {'name': vcloud_volume_name, 'size': volume['size']})
+
+        self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
+
+        #NOTE(nkapotoxin): create vapp with vapptemplate
+        network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+        network_configs = self._vcloud_client.get_network_configs(network_names)
+
+        # create vapp
+        vapp_name = 'server@%s' % vcloud_volume_name
+        vapp = self._vcloud_client.create_vapp(vapp_name, CONF.vcloud.base_image_id, network_configs)
+
+        # generate the network_connection
+        network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
+
+        # update network
+        self._vcloud_client.update_vms_connections(vapp, network_connections)
+
+        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+        if result:
+            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+
+        # power on it
+        self._vcloud_client.power_on_vapp(vapp_name)
+
+        vapp_ip = self.get_vapp_ip(vapp_name)
+        self._wait_hybrid_service_up(vapp_ip, port=CONF.vcloud.hybrid_service_port)
+
+        client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
+        try:
+            #client.create_container(conf.vcloud.base_image_name)
+            pass
+        except (errors.NotFound, errors.APIError) as e:
+            LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
+
+        self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
+        self._vcloud_client.power_off_vapp(vapp_name)
+        self._vcloud_client.delete_vapp(vapp_name)
 
     def extend_volume(self, volume, new_size):
         """Extend a volume."""
@@ -658,3 +736,12 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         """Fail if connector doesn't contain all the data needed by driver."""
         LOG.debug('vCloud Driver: validate_connector')
         pass
+
+    @_retry_decorator(max_retry_count=60,exceptions = (errors.APIError,errors.NotFound))
+    def get_vapp_ip(self, vapp_name):
+        return self._vcloud_client.get_vapp_ip(vapp_name)
+
+    @_retry_decorator(max_retry_count=60,exceptions=(errors.APIError,errors.NotFound, errors.ConnectionError, errors.InternalError))
+    def _wait_hybrid_service_up(self, server_ip, port = '7127'):
+        client = Client(server_ip, port = port)
+        return client.get_version()

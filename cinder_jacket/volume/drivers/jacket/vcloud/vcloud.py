@@ -13,36 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from cinder import exception
-from cinder.volume.drivers.vcloud import exceptions
-from oslo.config import cfg
-from oslo.vmware.common import loopingcall
-from oslo.utils import excutils
-from cinder.openstack.common import log as logging
-from cinder.i18n import _, _LI, _LW, _LE
-from threading import Lock
-import time
-import base64
 import requests
-from requests import exceptions as requests_excep
+from threading import Lock
 from StringIO import StringIO
-import json
-from xml.etree import ElementTree as ET
-from pyvcloud.schema.vcd.v1_5.schemas.admin import vCloudEntities
+from oslo.utils import excutils
+from oslo.vmware.common import loopingcall
+from requests import exceptions as requests_excep
+
+from cinder.i18n import _, _LI, _LW, _LE
+from cinder.openstack.common import log as logging
+from cinder.volume.drivers.jacket.vcloud import exceptions
+
+from pyvcloud.helper import CommonUtils
+from pyvcloud.vapp import VAPP as sdk_vapp
+from pyvcloud.vcloudair import VCA as sdk_vca
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud import vAppType, \
     organizationListType, vdcType, catalogType, queryRecordViewType, \
-    networkType, vcloudType, taskType
-from pyvcloud.vcloudsession import VCS
-
-from pyvcloud.gateway import Gateway
-from pyvcloud.schema.vcim import serviceType, vchsType
-from pyvcloud.helper import CommonUtils
+    networkType, vcloudType, taskType, vAppTemplateType
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud.networkType import IpScopeType,\
     OrgVdcNetworkType, ReferenceType, NetworkConfigurationType, \
     IpScopesType, IpRangesType, IpRangeType, DhcpPoolServiceType
-from pyvcloud.score import Score
-from pyvcloud.vcloudair import VCA as sdk_vca
-from pyvcloud.vapp import VAPP as sdk_vapp
+
 
 LOG = logging.getLogger(__name__)
 
@@ -103,7 +94,7 @@ class RetryDecorator(object):
     """
 
     def __init__(self, max_retry_count=-1, inc_sleep_time=10,
-                 max_sleep_time=60, exceptions=()):
+                 max_sleep_time=10, exceptions=()):
         """Configure the retry object using the input params.
 
         :param max_retry_count: maximum number of times the given function must
@@ -169,6 +160,47 @@ class RetryDecorator(object):
             return evt.wait()
 
         return func
+
+class NetworkConfig(object):
+    def __init__(self, network_name=None, fence_mode=None, href=None):
+        self._network_name = network_name
+        self._fence_mode = fence_mode
+        self._href = href
+
+    @property
+    def network_name(self):
+        return self._network_name
+
+    @property
+    def fence_mode(self):
+        return self._fence_mode
+
+    @property
+    def href(self):
+        return self._href
+
+class NetworkConnection(object):
+    def __init__(self, network_name=None, ip_allocation_mode=None, ip_address=None, mac_address=None):
+        self._network_name = network_name
+        self._ip_allocation_mode = ip_allocation_mode
+        self._ip_address = ip_address
+        self._mac_address = mac_address
+
+    @property
+    def network_name(self):
+        return self._network_name
+
+    @property
+    def ip_allocation_mode(self):
+        return self._ip_allocation_mode
+
+    @property
+    def ip_address(self):
+        return self._ip_address
+
+    @property
+    def mac_address(self):
+        return self._mac_address
 
 class VCA(sdk_vca):
 
@@ -279,8 +311,7 @@ class VCA(sdk_vca):
                                     task.href, headers=headers,
                                     verify=self.verify)
         if response.status_code == requests.codes.forbidden:
-            excep_msg = "Execute task error, task is: %s" \
-                % (task)
+            excep_msg = "Get task result error, task :%s" % task
             raise exceptions.ForbiddenException(excep_msg)
         if response.status_code == requests.codes.ok:
             doc = self.parsexml_(response.content)
@@ -342,6 +373,179 @@ class VCA(sdk_vca):
                     excep_msg = "Get_vdc failed, response:%s" % (response)
                     raise exceptions.VCloudDriverException(excep_msg)
 
+    def get_vapp_template(self, vdc, vapp_template_name):
+        resource_entities = vdc.get_ResourceEntities().get_ResourceEntity()
+        return [resource_entity for resource_entity in resource_entities
+                    if resource_entity.get_type() == "application/vnd.vmware.vcloud.vAppTemplate+xml" and resource_entity.get_name() == vapp_template_name ]
+
+    def get_vapp_first_vm_href(self, vapp_template_href):
+        headers = self.vcloud_session.get_vcloud_headers()
+        response = self._invoke_api(requests, 'get', vapp_template_href, headers=headers, verify=self.verify)
+        if response.status_code == requests.codes.ok:
+            vapptemplate = vAppTemplateType.parseString(response.content, True)
+            children = vapptemplate.get_Children()
+            if children and children.get_Vm():
+                return children.get_Vm()[0].href
+            raise exceptions.VCloudDriverException("Cannot find the vm in vapptemplate %s" % (vapp_template_href))
+        elif response.status_code == requests.codes.forbidden:
+            excep_msg = "Get_vm from vapptemplate forbidden, vdc_name:%s" % (vdc_name)
+            raise exceptions.ForbiddenException(excep_msg)
+        else:
+            excep_msg = "Get_vm from vapptemplate failed, response:%s" % (response)
+            raise exceptions.VCloudDriverException(excep_msg)
+
+
+    def get_diskRefs(self, vdc_ref):
+        return super(VCA, self).get_diskRefs(vdc_ref)
+
+    def _generate_network_config(self, network_configs):
+        generated_configs = []
+        for network_config in network_configs:
+            generated_config = vcloudType.VAppNetworkConfigurationType(networkName = network_config.network_name)
+            config = vcloudType.NetworkConfigurationType(FenceMode=network_config.fence_mode,
+                                                         ParentNetwork=\
+                                                             vcloudType.ReferenceType(href=network_config.href))
+            generated_config.set_Configuration(config)
+            generated_configs.append(generated_config)
+
+        return generated_configs
+
+    def _generate_instantiate_vapp_params(self, name, template_href, deploy=False, poweron=False,
+                                          network_configs=[], root_gb=None):
+        template_params = vcloudType.InstantiateVAppTemplateParamsType(name=name, powerOn=poweron, deploy=deploy)
+        source = vcloudType.ReferenceType(href=template_href)
+        template_params.set_Source(source)
+        generated_configs = self._generate_network_config(network_configs)
+        if len(generated_configs) >= 1:
+            instantiation_params = vcloudType.InstantiationParamsType()
+            network_config_section = vcloudType.NetworkConfigSectionType()
+            network_config_section.original_tagname_="NetworkConfigSection"
+            for generated_config in generated_configs:
+                network_config_section.add_NetworkConfig(generated_config)
+
+            instantiation_params.add_Section(network_config_section)
+            template_params.set_InstantiationParams(instantiation_params)
+
+        # modify disk
+        if root_gb:
+            source_vm_params = vcloudType.SourcedVmInstantiationParamsType()
+            hardware_cus = vcloudType.InstantiateVmHardwareCustomizationParamsType()
+            vm_href = self.get_vapp_first_vm_href(template_href)
+            vm_source = vcloudType.ReferenceType(href=vm_href)
+            disk_conf = vcloudType.DiskType4(instanceId="2000", Size=root_gb * 1024)
+            hardware_cus.add_Disk(disk_conf)
+            source_vm_params.set_HardwareCustomization(hardware_cus)
+            source_vm_params.set_Source(vm_source)
+            template_params.add_SourcedVmInstantiationParams(source_vm_params)
+
+        template_params.set_AllEULAsAccepted("true")
+        return template_params
+
+    def create_vapp(self, vdc_name, vapp_name, template_name, catalog_name=None, network_configs=[], deploy=False,
+                    poweron=False, root_gb=None):
+        vdc = self.get_vdc(vdc_name)
+        vapp_template_entity = self.get_vapp_template(vdc, template_name)
+        if len(vapp_template_entity) < 1:
+            raise exceptions.ForbiddenException("Create_vapp error, cannot find the template %s" % template_name)
+        template_params = self._generate_instantiate_vapp_params(vapp_name, vapp_template_entity[0].href,
+                                                                       deploy=deploy, poweron=poweron,
+                                                                       network_configs=network_configs,
+                                                                       root_gb=root_gb)
+        output = StringIO()
+        template_params.export(output, 0, name_ = 'InstantiateVAppTemplateParams',
+                               namespacedef_ = '''xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"''',
+                                               pretty_print = False)
+        body = '<?xml version="1.0" encoding="UTF-8"?>' + \
+                output.getvalue().replace('class:', 'rasd:')\
+                                 .replace(' xmlns:vmw="http://www.vmware.com/vcloud/v1.5"', '')\
+                                 .replace('vmw:', 'rasd:')\
+                                 .replace('ovf:NetworkConfigSection', 'NetworkConfigSection')\
+                                 .replace('Info>', "ovf:Info>")\
+                                 .replace('<NetworkConfigSection>', '<NetworkConfigSection><ovf:Info>networks</ovf:Info>')
+        content_type = "application/vnd.vmware.vcloud.instantiateVAppTemplateParams+xml"
+        link = filter(lambda link: link.get_type() == content_type, vdc.get_Link())
+        headers = self.vcloud_session.get_vcloud_headers()
+        response = self._invoke_api(requests, 'post',
+                                            link[0].href,
+                                            headers=headers,
+                                            data=body,
+                                            verify=self.verify)
+        if response.status_code == requests.codes.forbidden:
+            raise exceptions.ForbiddenException("Create_vapp error, vapp_name:%s" % vapp_name)
+        if response.status_code == requests.codes.created:
+            vapp = vAppType.parseString(response.content, True)
+            task = vapp.get_Tasks().get_Task()[0]
+            return (True, task)
+        else:
+            return (False, response.content)
+
+    def get_vapp(self, vdc, vapp_name):
+        vapp = super(VCA, self).get_vapp(vdc, vapp_name)
+    
+        if not vapp:
+            LOG.error("cannot get vapp %s info" % vapp_name)
+            raise exceptions.ForbiddenException("cannot get vapp %s info" % vapp_name)
+    
+        return VAPP(vapp.me, vapp.headers, vapp.verify)
+
+    def get_media(self, catalog_name, media_name):
+        refs = filter(lambda ref: ref.name == catalog_name and ref.type_ == 'application/vnd.vmware.vcloud.catalog+xml', self.vcloud_session.organization.Link)
+        if len(refs) == 1:
+            response = self._invoke_api(requests, 'get',
+                                        refs[0].get_href(), 
+                                        headers=self.vcloud_session.get_vcloud_headers(),
+                                        verify=self.verify)
+            if response.status_code == requests.codes.ok:
+                catalog = catalogType.parseString(response.content, True)
+                catalog_items = filter(lambda catalogItemRef: catalogItemRef.get_name() == media_name, catalog.get_CatalogItems().get_CatalogItem())
+                if len(catalog_items) == 1:
+                    response = self._invoke_api(requests, 'get',
+                                                catalog_items[0].get_href(),
+                                                headers=self.vcloud_session.get_vcloud_headers(),
+                                                verify=self.verify)
+                    if response.status_code == requests.codes.ok:
+                        doc = self.parsexml_(response.content)
+                        for element in doc._children:
+                            if element.tag == '{http://www.vmware.com/vcloud/v1.5}Entity':
+                                return element.attrib
+                    elif response.status_code == requests.codes.forbidden:
+                        excep_msg = "Get_media forbidden,get media_ref error, media_name:%s" % (media_name)
+                        raise exceptions.ForbiddenException(excep_msg)
+                    else:
+                        excep_msg = "Get_media failed, get media_ref error, response:%s" % (response)
+                        raise exceptions.VCloudDriverException(excep_msg)
+                else:
+                    excep_msg = "Get_media error, catalog_items size is not one, media_name:%s" % (media_name) 
+                    raise exceptions.VCloudDriverException(excep_msg)
+            elif response.status_code == requests.codes.forbidden:
+                excep_msg = "Get_media forbidden, media_name:%s" % (media_name)
+                raise exceptions.ForbiddenException(excep_msg)
+            else:
+                excep_msg = "Get_media failed, response:%s" % (response)
+                raise exceptions.VCloudDriverException(excep_msg)
+
+    def get_network_ref(self, vdc_name, network_name):
+        vdc = self.get_vdc(vdc_name)
+        if not vdc:
+            return None
+        networks = vdc.get_AvailableNetworks().get_Network()
+        for n in networks:
+            if n.get_name() == network_name:
+                return n.get_href()
+
+    def get_network_configs(self, vdc_name, network_names):
+        network_configs = []
+        for n in network_names:
+            # find the network ref in vcloud
+            href = self.get_network_ref(vdc_name, n)
+            if not href:
+                raise exceptions.VCloudDriverException("Cannot find the network %s" % n)
+            network_config = NetworkConfig(network_name="VM Network", fence_mode="bridged", href=href)
+            network_configs.append(network_config)
+
+        return network_configs
+
+
     def session_is_active(self):
         """If session is not active, this will return false, else
         will return true"""
@@ -357,6 +561,7 @@ class VCA(sdk_vca):
             return False
 
         return is_active
+
 
     def _invoke_api(self, module, method, *args, **kwargs):
         try:
@@ -380,57 +585,18 @@ class VCA(sdk_vca):
     def __repr__(self):
         return "VCA Object"
 
-    def get_vapp(self, vdc, vapp_name):
-        vapp = super(VCA, self).get_vapp(vdc, vapp_name)
-
-        if not vapp:
-            LOG.error("cannot get vapp %s info" % vapp_name)
-            raise exceptions.ForbiddenException("cannot get vapp %s info" % vapp_name)
-
-        return VAPP(vapp.me, vapp.headers, vapp.verify)
-
-    def get_disk_ref(self, vdc_name, disk_name):
-        """
-
-        Request the references to disk volumes in a vdc.
-
-        :param vdc_name: (str): The name of the virtual data center.
-        :param disk_name: (str): The name of a disk.
-        :return: (tuple of (bool, task or str))  Two values are returned, \
-                 a bool success indicator and a class:`pyvcloud.schema.vcd.\
-                 v1_5.schemas.vcloud.vdcType.ResourceReferenceType` object \
-                 if the bool value was True or a str message indicating \
-                 the reason for failure if the bool value was False.
-        Use get_name(), get_type() and get_href() methods on each list entry to\
-        return disk details.
-
-        """
-        refs = self.get_diskRefs(self.get_vdc(vdc_name))
-        link = filter(lambda link: link.get_name() == disk_name, refs)
-        if len(link) == 1:
-            return True, link[0]
-        elif len(link) == 0:
-            return False, 'disk not found'
-        elif len(link) > 1:
-            return False, 'more than one disks found with that name.'
-
-    def add_disk(self, vdc_name, name, size):
-        result, resp = self.get_disk_ref(vdc_name, name)
-        if result:
-            error_msg = _("Add disk %s failed, because it already exist."
-                          % name)
-            LOG.error(error_msg)
-            raise exceptions.VCloudDriverException(error_msg)
-        return super(VCA, self).add_disk(vdc_name, name, size)
-
-    def delete_disk(self, vdc_name, name, id=None):
-        return super(VCA, self).delete_disk(vdc_name, name, id)
-
-
 class VAPP(sdk_vapp):
 
     def __init__(self, vApp, headers, verify):
         super(VAPP, self).__init__(vApp, headers, verify)
+
+    def get_network_connections(self, network_names):
+        network_connections = []
+        for n in network_names:
+            network_connection = NetworkConnection(network_name=n, ip_allocation_mode="DHCP")
+            network_connections.append(network_connection)
+
+        return network_connections
 
     def enableDownload(self):
         headers = self.headers
@@ -482,15 +648,161 @@ class VAPP(sdk_vapp):
         url = url.replace('descriptor.ovf', ref_file_id)
         return url
 
+    def _create_network_connection(self, network_connections):
+        if len(network_connections) > 1:
+            network_connection_section = vcloudType.NetworkConnectionSectionType(PrimaryNetworkConnectionIndex=0)
+            index = 0
+            for network_connection in network_connections:
+                generated_network_connection = vcloudType.NetworkConnectionType()
+                generated_network_connection.set_network(network_connection.network_name)
+                generated_network_connection.set_NetworkConnectionIndex(index)
+                generated_network_connection.set_IpAddressAllocationMode(network_connection.ip_allocation_mode)
+                generated_network_connection.set_IsConnected(True)
+                if network_connection.ip_address and network_connection.ip_allocation_mode == 'MANUAL':
+                    generated_network_connection.set_IpAddress(network_connection.ip_address)
+                if network_connection.mac_address:
+                    generated_network_connection.set_MACAddress(network_connection.mac_address)
+                network_connection_section.add_NetworkConnection(generated_network_connection)
+                index += 1
+            return network_connection_section
+
+    def update_vms_connections(self, network_connections):
+        children = self.me.get_Children()
+        if children:
+            vms = children.get_Vm()
+            for vm in vms:
+                network_connection = self._create_network_connection(network_connections)
+                output = StringIO()
+                network_connection.export(output,
+                    0,
+                    name_ = 'NetworkConnectionSection',
+                    namespacedef_ = 'xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:vmw="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"',
+                    pretty_print = True)
+                body=output.getvalue().replace("vmw:Info", "ovf:Info")\
+                                      .replace("<PrimaryNetworkConnectionIndex>", "<ovf:Info>Change network.</ovf:Info><PrimaryNetworkConnectionIndex>")
+                response = self._invoke_api(requests, 'put',
+                                            vm.get_href() + "/networkConnectionSection/",
+                                            headers=self.headers,
+                                            data=body,
+                                            verify=self.verify)
+                if response.status_code == requests.codes.forbidden:
+                    raise exceptions.ForbiddenException("Update_vms_connections error")
+                if response.status_code == requests.codes.accepted:
+                    task = taskType.parseString(response.content, True)
+                    return (True, task)
+                else:
+                    return (False, response.content)
+
+    def  modify_vm_memory(self, new_size):
+        children = self.me.get_Children()
+        if children:
+            vms = children.get_Vm()
+            for vm in vms:
+                sections = vm.get_Section()
+                virtualHardwareSection = filter(lambda section: section.__class__.__name__== "VirtualHardwareSection_Type", sections)[0]
+                items = virtualHardwareSection.get_Item()
+                memory = filter(lambda item: item.get_Description().get_valueOf_() == "Memory Size", items)[0]
+                href = memory.get_anyAttributes_().get('{http://www.vmware.com/vcloud/v1.5}href')
+                en = memory.get_ElementName()
+                en.set_valueOf_('%s MB of memory' % new_size)
+                memory.set_ElementName(en)
+                vq = memory.get_VirtualQuantity()
+                vq.set_valueOf_(new_size)
+                memory.set_VirtualQuantity(vq)
+                weight = memory.get_Weight()
+                weight.set_valueOf_(str(int(new_size)*10))
+                memory.set_Weight(weight)
+                memory_string = CommonUtils.convertPythonObjToStr(memory, 'Memory')
+                output = StringIO()
+                memory.export(output,
+                    0,
+                    name_ = 'Item',
+                    namespacedef_ = 'xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1" xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"',
+                    pretty_print = True)
+                body = output.getvalue().\
+                    replace('Info msgid=""', "ovf:Info").replace("/Info", "/ovf:Info").\
+                    replace("vmw:", "").replace("class:", "rasd:").replace("ResourceType", "rasd:ResourceType")
+                response = self._invoke_api(requests, 'put',
+                                            href,
+                                            headers=self.headers,
+                                            data=body,
+                                            verify=self.verify)
+                if response.status_code == requests.codes.accepted:
+                    task = taskType.parseString(response.content, True)
+                    return (True, task)
+                else:
+                    return (False, response.content)
+        raise Exception('can\'t find vm')
+
+    def modify_vm_cpu(self, cpus):
+        children = self.me.get_Children()
+        if children:
+            vms = children.get_Vm()
+            for vm in vms:
+                sections = vm.get_Section()
+                virtualHardwareSection = filter(lambda section: section.__class__.__name__== "VirtualHardwareSection_Type", sections)[0]
+                items = virtualHardwareSection.get_Item()
+                cpu = filter(lambda item: (item.get_anyAttributes_().get('{http://www.vmware.com/vcloud/v1.5}href') != None and item.get_anyAttributes_().get('{http://www.vmware.com/vcloud/v1.5}href').endswith('/virtualHardwareSection/cpu')), items)[0]
+                href = cpu.get_anyAttributes_().get('{http://www.vmware.com/vcloud/v1.5}href')
+                en = cpu.get_ElementName()
+                en.set_valueOf_('%s virtual CPU(s)' % cpus)
+                cpu.set_ElementName(en)
+                vq = cpu.get_VirtualQuantity()
+                vq.set_valueOf_(cpus)
+                cpu.set_VirtualQuantity(vq)
+                cpu_string = CommonUtils.convertPythonObjToStr(cpu, 'CPU')
+                output = StringIO()
+                cpu.export(output,
+                    0,
+                    name_ = 'Item',
+                    namespacedef_ = 'xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1" xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"',
+                    pretty_print = True)
+                body = output.getvalue().\
+                    replace('Info msgid=""', "ovf:Info").replace("/Info", "/ovf:Info").\
+                    replace("vmw:", "").replace("class:", "rasd:").replace("ResourceType", "rasd:ResourceType")
+                response = self._invoke_api(requests, 'put',
+                                            href,
+                                            headers=self.headers,
+                                            data=body,
+                                            verify=self.verify)
+                if response.status_code == requests.codes.accepted:
+                    task = taskType.parseString(response.content, True)
+                    return (True, task)
+                else:
+                    return (False, response.content)
+        raise Exception('can\'t find vm')
+
+    def vm_media(self, media, operation):
+        """
+        Return a list of details for a media device attached to the VM.
+        :param media_name: (str): The name of the attached media.
+
+        :return: (dict) a dictionary containing media details. \n
+         Dictionary keys 'name','type','href'
+        """
+        children = self.me.get_Children()
+        if children:
+            vms = children.get_Vm()
+            if len(vms) ==1:
+                body = """
+                 <MediaInsertOrEjectParams xmlns="http://www.vmware.com/vcloud/v1.5">
+                     <Media
+                       type="%s"
+                       name="%s"
+                       href="%s" />
+                 </MediaInsertOrEjectParams>
+                """ % (media.get('name'), media.get('id'), media.get('href'))
+                return self.execute("media:%sMedia" % operation, "post", body=body, targetVM=vms[0])
+
     def attach_disk_to_vm(self, disk_ref):
         """
         Attach a disk volume to a VM.
-    
+
         The volume must have been previously added to the VDC.
-    
+
         :param disk_ref: (str): The url of a disk resource.
         :return: (TaskType) a :class:`pyvcloud.schema.vcd.v1_5.schemas.admin.vCloudEntities.TaskType` object that can be used to monitor the request.
-    
+
         *Note:* A list of disk references for the vdc can be obtained using the VCA get_diskRefs() method
         """
         children = self.me.get_Children()
@@ -504,16 +816,16 @@ class VAPP(sdk_vapp):
                  </DiskAttachOrDetachParams>
                 """ % disk_ref.href
                 return self.execute("disk:attach", "post", body=body, targetVM=vms[0])
-    
+
     def detach_disk_from_vm(self, disk_ref):
         """
         Detach a disk volume from a VM.
-    
+
         The volume must have been previously attached to the VM.
-    
+
         :param disk_ref: (str): The url of a disk resource.
         :return: (TaskType) a :class:`pyvcloud.schema.vcd.v1_5.schemas.admin.vCloudEntities.TaskType` object that can be used to monitor the request.
-    
+
         *Note:* A list of disk references for the vdc can be obtained using the VCA get_diskRefs() method
         """
         children = self.me.get_Children()
@@ -529,88 +841,22 @@ class VAPP(sdk_vapp):
                 return self.execute("disk:detach", "post", body=body, targetVM=vms[0])
 
 
-    def get_vdc(self, vdc_name):
-        if self.vcloud_session and self.vcloud_session.organization:
-            refs = filter(lambda ref: ref.name == vdc_name and ref.type_ ==
-                          'application/vnd.vmware.vcloud.vdc+xml',
-                          self.vcloud_session.organization.Link)
-            if len(refs) == 1:
-                headers = self.vcloud_session.get_vcloud_headers()
-                response = self._invoke_api(requests, 'get',
-                                            refs[0].href,
-                                            headers=headers,
-                                            verify=self.verify)
-                if response.status_code == requests.codes.ok:
-                    return vdcType.parseString(response.content, True)
-                elif response.status_code == requests.codes.forbidden:
-                    excep_msg = "Get_vdc forbidden, vdc_name:%s" % (vdc_name)
-                    raise exceptions.ForbiddenException(excep_msg)
-                else:
-                    excep_msg = "Get_vdc failed, response:%s" % (response)
-                    raise exceptions.VCloudDriverException(excep_msg)
-    def _generate_network_config(self, network_configs):
-        generated_configs = []
-        for network_config in network_configs:
-            generated_config = vcloudType.VAppNetworkConfigurationType(networkName = network_config.network_name)
-            config = vcloudType.NetworkConfigurationType(FenceMode=network_config.fence_mode,
-                                                         ParentNetwork=\
-                                                             vcloudType.ReferenceType(href=network_config.href))
-            generated_config.set_Configuration(config)
-            generated_configs.append(generated_config)
+    def _invoke_api(self, module, method, *args, **kwargs):
+        try:
+            api_method = getattr(module, method)
+            return api_method(*args, **kwargs)
+        except requests_excep.SSLError as excep:
+            excep_msg = ("Invoking method SSLError %(module)s.%(method)s" %
+                         {'module': module, 'method': method})
+            LOG.error(excep_msg, exc_info=True)
+            raise exceptions.SSLError(excep_msg)
+        except requests_excep.RequestException as re:
+            excep_msg = ("Invoking method request error"
+                         "%(module)s.%(method)s" %
+                         {'module': module, 'method': method})
+            LOG.error(excep_msg, exc_info=True)
+            raise exceptions.VCloudDriverException(re)
 
-        return generated_configs
-        
-    def _generate_instantiate_vapp_params(self, name, template_href, deploy=False, poweron=False,
-                                          network_configs=[], root_gb=None):
-        template_params = vcloudType.InstantiateVAppTemplateParamsType(name=name, powerOn=poweron, deploy=deploy)
-        source = vcloudType.ReferenceType(href=template_href)
-        template_params.set_Source(source)
-        generated_configs = self._generate_network_config(network_configs)
-        if len(generated_configs) >= 1:
-            instantiation_params = vcloudType.InstantiationParamsType()
-            network_config_section = vcloudType.NetworkConfigSectionType()
-            network_config_section.original_tagname_="NetworkConfigSection"
-            for generated_config in generated_configs:
-                network_config_section.add_NetworkConfig(generated_config)
-
-            instantiation_params.add_Section(network_config_section)
-            template_params.set_InstantiationParams(instantiation_params)
-
-        # modify disk
-        if root_gb:
-            source_vm_params = vcloudType.SourcedVmInstantiationParamsType()
-            hardware_cus = vcloudType.InstantiateVmHardwareCustomizationParamsType()
-            vm_href = self.get_vapp_first_vm_href(template_href)
-            vm_source = vcloudType.ReferenceType(href=vm_href)
-            disk_conf = vcloudType.DiskType4(instanceId="2000", Size=root_gb * 1024)
-            hardware_cus.add_Disk(disk_conf)
-            source_vm_params.set_HardwareCustomization(hardware_cus)
-            source_vm_params.set_Source(vm_source)
-            template_params.add_SourcedVmInstantiationParams(source_vm_params)
-
-        template_params.set_AllEULAsAccepted("true")
-        return template_params
-        
-    def get_vapp_template(self, vdc, vapp_template_name):
-          resource_entities = vdc.get_ResourceEntities().get_ResourceEntity()
-          return [resource_entity for resource_entity in resource_entities
-                      if resource_entity.get_type() == "application/vnd.vmware.vcloud.vAppTemplate+xml" and resource_entity.get_name() == vapp_template_name ]
-
-    def get_vapp_first_vm_href(self, vapp_template_href):
-      headers = self.vcloud_session.get_vcloud_headers()
-      response = self._invoke_api(requests, 'get', vapp_template_href, headers=headers, verify=self.verify)
-      if response.status_code == requests.codes.ok:
-          vapptemplate = vAppTemplateType.parseString(response.content, True)
-          children = vapptemplate.get_Children()
-          if children and children.get_Vm():
-              return children.get_Vm()[0].href
-          raise exceptions.VCloudDriverException("Cannot find the vm in vapptemplate %s" % (vapp_template_href))
-      elif response.status_code == requests.codes.forbidden:
-          excep_msg = "Get_vm from vapptemplate forbidden, vdc_name:%s" % (vdc_name)
-          raise exceptions.ForbiddenException(excep_msg)
-      else:
-          excep_msg = "Get_vm from vapptemplate failed, response:%s" % (response)
-          raise exceptions.VCloudDriverException(excep_msg)    
 
 class VCloudAPISession(object):
 
@@ -801,12 +1047,12 @@ class VCloudAPISession(object):
                 LOG.exception("Error occurred while reading info of "
                               "task: %s.", task)
         else:
-            if task_info['status'] in ['queued', 'running', '0']:
+            if task_info['status'] in ['queued', 'running']:
                 if hasattr(task_info, 'progress'):
                     LOG.debug("Task: %(task)s progress is %(progress)s%%.",
                               {'task': task,
                                'progress': task_info.progress})
-            elif task_info['status'] in ['success', '1']:
+            elif task_info['status'] == 'success':
                 LOG.debug("Task: %s status is success.", task)
                 raise loopingcall.LoopingCallDone(task_info)
             else:
@@ -828,6 +1074,3 @@ class VCloudAPISession(object):
     def _get_error_message(self, lease):
         """Get error message associated with the given lease."""
         return "Unknown"
-
-
-

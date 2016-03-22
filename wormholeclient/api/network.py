@@ -1,5 +1,4 @@
 class NetworkApiMixin(object):
-
     def attach_interface(self, vif, timeout=10):
         params = {'t': timeout}
         url = self._url("/container/attach-interface")

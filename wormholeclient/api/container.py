@@ -33,3 +33,10 @@ class ContainerApiMixin(object):
         res = self._post_json(url, params=params, data=start_config)
         self._raise_for_status(res)
         return res.raw
+
+    def inject_files(self, inject_files, timeout=10):
+        params = {'t': timeout}
+        url = self._url("/container/inject-files")
+        res = self._post_json(url, data={ 'inject_files' : inject_files })
+        self._raise_for_status(res)
+        return res.raw

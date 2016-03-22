@@ -3,7 +3,8 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at #
+# You may obtain a copy of the License at
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -12,27 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from threading import Lock
 import requests
+from threading import Lock
 from StringIO import StringIO
 from oslo.utils import excutils
 from oslo.vmware.common import loopingcall
-from oslo.utils import excutils
-from nova.openstack.common import log as logging
-from nova.i18n import _, _LW, _LE
 from requests import exceptions as requests_excep
+
+from nova.i18n import _, _LW, _LE
+from nova.openstack.common import log as logging
+from nova.virt.jacket.vcloud import exceptions
+
+from pyvcloud.helper import CommonUtils
+from pyvcloud.vapp import VAPP as sdk_vapp
+from pyvcloud.vcloudair import VCA as sdk_vca
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud import vAppType, \
     organizationListType, vdcType, catalogType, queryRecordViewType, \
     networkType, vcloudType, taskType, vAppTemplateType
-from pyvcloud.helper import CommonUtils
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud.networkType import IpScopeType,\
     OrgVdcNetworkType, ReferenceType, NetworkConfigurationType, \
     IpScopesType, IpRangesType, IpRangeType, DhcpPoolServiceType
-from pyvcloud.score import Score
-from pyvcloud.vcloudair import VCA as sdk_vca
-from pyvcloud.vapp import VAPP as sdk_vapp
-
-from nova.virt.jacket.vcloud import exceptions
 
 
 LOG = logging.getLogger(__name__)
@@ -479,6 +479,15 @@ class VCA(sdk_vca):
         else:
             return (False, response.content)
 
+    def get_vapp(self, vdc, vapp_name):
+        vapp = super(VCA, self).get_vapp(vdc, vapp_name)
+    
+        if not vapp:
+            LOG.error("cannot get vapp %s info" % vapp_name)
+            raise exceptions.ForbiddenException("cannot get vapp %s info" % vapp_name)
+    
+        return VAPP(vapp.me, vapp.headers, vapp.verify)
+
     def get_media(self, catalog_name, media_name):
         refs = filter(lambda ref: ref.name == catalog_name and ref.type_ == 'application/vnd.vmware.vcloud.catalog+xml', self.vcloud_session.organization.Link)
         if len(refs) == 1:
@@ -536,6 +545,7 @@ class VCA(sdk_vca):
 
         return network_configs
 
+
     def session_is_active(self):
         """If session is not active, this will return false, else
         will return true"""
@@ -552,11 +562,12 @@ class VCA(sdk_vca):
 
         return is_active
 
+
     def _invoke_api(self, module, method, *args, **kwargs):
         try:
             api_method = getattr(module, method)
             return api_method(*args, **kwargs)
-        except requests_excep.SSLError:
+        except requests_excep.SSLError as excep:
             excep_msg = ("Invoking method SSLError %(module)s.%(method)s" %
                          {'module': module, 'method': method})
             LOG.error(excep_msg, exc_info=True)
@@ -573,16 +584,6 @@ class VCA(sdk_vca):
 
     def __repr__(self):
         return "VCA Object"
-
-    def get_vapp(self, vdc, vapp_name):
-        vapp = super(VCA, self).get_vapp(vdc, vapp_name)
-
-        if not vapp:
-            LOG.error("cannot get vapp %s info" % vapp_name)
-            raise exceptions.ForbiddenException("cannot get vapp %s info" % vapp_name)
-
-        return VAPP(vapp.me, vapp.headers, vapp.verify)
-
 
 class VAPP(sdk_vapp):
 
@@ -1073,6 +1074,3 @@ class VCloudAPISession(object):
     def _get_error_message(self, lease):
         """Get error message associated with the given lease."""
         return "Unknown"
-
-
-
