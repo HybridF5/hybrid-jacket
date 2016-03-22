@@ -149,7 +149,6 @@ class ContainerController(wsgi.Application):
         if volume_id:
             # Create VM from volume, create a symbolic link for the device.
             LOG.info("create new container from volume %s", volume_id)
-            import pdb;pdb.set_trace()
             volume.add_root_mapping(volume_id)
             pass
         try:

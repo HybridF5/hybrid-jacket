@@ -123,7 +123,7 @@ class VolumeController(wsgi.Application):
         return device
 
     def add_root_mapping(self, volume_id):
-        root_dev_path = os.path.realpath(volume_path(DOCKER_LINK_NAME))
+        root_dev_path = os.path.realpath(volume_link_path(DOCKER_LINK_NAME))
         self.add_mapping(volume_id, "/docker", root_dev_path)
 
     def remove_mapping(self, volume):
