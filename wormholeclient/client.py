@@ -18,7 +18,7 @@ class Client(
     api.NetworkApiMixin,
     api.TaskApiMixin,
     api.PersonalityApiMixin):
-    def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS):
+    def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS, proxies = { "http": None,  "https": None, }):
         super(Client, self).__init__()
 
         if not host_ip:
@@ -26,7 +26,7 @@ class Client(
                 'The host argument must be provided.'
             )
 
-        self.proxies = { "http": None,  "https": None, }
+        self.proxies = proxies
 
         self.timeout = timeout
         base_url = utils.parse_host(host_ip, port, scheme)
