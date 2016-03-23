@@ -26,6 +26,8 @@ class Client(
                 'The host argument must be provided.'
             )
 
+        self.proxies = { "http": None,  "https": None, }
+
         self.timeout = timeout
         base_url = utils.parse_host(host_ip, port, scheme)
         self.base_url = base_url
@@ -50,16 +52,16 @@ class Client(
         return kwargs
 
     def _post(self, url, **kwargs):
-        return self.post(url, **self._set_request_timeout(kwargs))
+        return self.post(url, proxies=self.proxies, **self._set_request_timeout(kwargs))
 
     def _get(self, url, **kwargs):
-        return self.get(url, **self._set_request_timeout(kwargs))
+        return self.get(url, proxies=self.proxies, **self._set_request_timeout(kwargs))
 
     def _put(self, url, **kwargs):
-        return self.put(url, **self._set_request_timeout(kwargs))
+        return self.put(url, proxies=self.proxies, **self._set_request_timeout(kwargs))
 
     def _delete(self, url, **kwargs):
-        return self.delete(url, **self._set_request_timeout(kwargs))
+        return self.delete(url, proxies=self.proxies, **self._set_request_timeout(kwargs))
 
     def _url(self, pathfmt, *args, **kwargs):
         for arg in args:
