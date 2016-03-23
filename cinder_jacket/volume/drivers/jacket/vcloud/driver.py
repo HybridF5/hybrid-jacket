@@ -346,18 +346,18 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
             task = client.clone_volume(volume, src_vref)
             while client.query_task(task) == client_constants.TASK_DOING:
-                time.sleep(3)
+                time.sleep(10)
 
         except (errors.NotFound, errors.APIError) as e:
             LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
 
-        self._vcloud_client.detach_disk_from_vm(vapp_name, local_disk_ref)        
         self._vcloud_client.detach_disk_from_vm(vapp_name, src_disk_ref)
         self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
         if src_vref['volume_attachment']:
             self._vcloud_client.attach_disk_to_vm(src_vapp_name, src_disk_ref)
         self._vcloud_client.power_off_vapp(vapp_name)
         self._vcloud_client.delete_vapp(vapp_name)
+        self._vcloud_client.delete_volume(local_disk_name)
 
     def extend_volume(self, volume, new_size):
         """Extend a volume."""
