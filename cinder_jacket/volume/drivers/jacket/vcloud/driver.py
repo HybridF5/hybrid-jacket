@@ -17,12 +17,15 @@ from cinder.openstack.common import log as logging
 from cinder.volume import driver
 from cinder.volume import volume_types
 from cinder.volume.drivers.jacket.vcloud import util
+from cinder.volume.drivers.jacket.vcloud import constants
 from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
 from cinder.volume.drivers.jacket.vcloud.vcloud_client import VCloudClient
 from cinder.volume.drivers.jacket.vcloud import sshclient
 
 from wormholeclient import errors
 from wormholeclient.client import Client
+from wormholeclient import constants as client_constants
+
 from keystoneclient.v2_0 import client as kc
 
 
@@ -216,30 +219,6 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         return vcloud_volume_name
 
-    def _get_disk_attached_vm(self, disk_name):
-        disks = self._vcloud_client.get_disks()
-        for disk, vms in disks:
-            if disk.get_name() == disk_name:
-                return vms
-
-    def _attach_disk_to_vm(self, the_vapp, disk_ref):
-        task = the_vapp.attach_disk_to_vm(the_vapp.name, disk_ref)
-        if not task:
-            raise exception.CinderException(
-                "Unable to attach disk to vm %s" % the_vapp.name)
-        else:
-            self._session._wait_for_task(task)
-            return True
-
-    def _detach_disk_from_vm(self, the_vapp, disk_ref):
-        task = the_vapp.detach_disk_from_vm(the_vapp.name, disk_ref)
-        if not task:
-            raise exception.CinderException(
-                "Unable to detach disk from vm %s" % the_vapp.name)
-        else:
-            self._session._wait_for_task(task)
-            return True
-
     def do_setup(self, context):
         """Instantiate common class and log in storage system."""
         pass
@@ -279,13 +258,28 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
 
+        src_volume_name = src_vref['display_name']
+        src_vcloud_volume_name = self._get_vcloud_volume_name(src_vref['id'], src_volume_name)
+        result, src_disk_ref = self._vcloud_client.get_disk_ref(src_vcloud_volume_name)
+        
+        if src_vref['volume_attachment']:
+            src_vapp_name = self._vcloud_client.get_disk_attached_vapp(src_vcloud_volume_name)
+            src_vapp = self._vcloud_client._get_vcloud_vapp(src_vapp_name)
+            if self._vcloud_client._get_status_first_vm(src_vapp) != constants.VM_POWER_OFF_STATUS:
+                msg = "when source volume is attached, the vm must be in power off state"
+                LOG.info(msg)
+                raise exception.CinderException(msg)
+                
+            self._vcloud_client.detach_disk_from_vm(src_vapp_name, src_disk_ref)
+            
         volume_name = volume['display_name']
-        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],volume_name)
+        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
 
         LOG.debug('Creating volume %(name)s of size %(size)s Gb',
                   {'name': vcloud_volume_name, 'size': volume['size']})
 
         self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
+        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
 
         #NOTE(nkapotoxin): create vapp with vapptemplate
         network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
@@ -301,9 +295,17 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         # update network
         self._vcloud_client.update_vms_connections(vapp, network_connections)
 
-        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+        if vapp_name.startswith('server@'):
+            local_disk_name = 'Local@%s' % vapp_name[len('server@'):]
+        else:
+            local_disk_name = 'Local@%s' % vapp_name
+
+        self._vcloud_client.create_volume(local_disk_name, 1)
+        result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
         if result:
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+            self._vcloud_client.attach_disk_to_vm(vapp_name, local_disk_ref)
+        else:
+            LOG.error(_('Unable to find volume %s to instance'),local_disk_name)
 
         # power on it
         self._vcloud_client.power_on_vapp(vapp_name)
@@ -313,12 +315,47 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
         try:
-            #client.create_container(conf.vcloud.base_image_name)
-            pass
+
+            odevs = set(client.list_volume()['devices'])
+            LOG.info('volume_name %s odevs: %s', src_volume_name, odevs)
+
+            if self._vcloud_client.attach_disk_to_vm(vapp_name, src_disk_ref):
+                LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                        {'volume_name': src_volume_name, 'instance_name': vapp_name})
+
+            ndevs = set(client.list_volume()['devices'])
+            LOG.info('volume_name %s ndevs: %s', src_volume_name, ndevs)
+
+            devs = ndevs - odevs
+            for dev in devs:
+                client.attach_volume(src_vref['id'], dev, 'dev/sde')
+
+            odevs = set(client.list_volume()['devices'])
+            LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
+            
+            if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
+                LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                        {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
+            
+            ndevs = set(client.list_volume()['devices'])
+            LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
+            
+            devs = ndevs - odevs
+            for dev in devs:
+                client.attach_volume(volume['id'], dev, 'dev/sdf')
+
+            task = client.clone_volume(volume, src_vref)
+            while client.query_task(task) == client_constants.TASK_DOING:
+                time.sleep(3)
+
         except (errors.NotFound, errors.APIError) as e:
             LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
 
+        self._vcloud_client.detach_disk_from_vm(vapp_name, local_disk_ref)        
+        self._vcloud_client.detach_disk_from_vm(vapp_name, src_disk_ref)
         self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
+        if src_vref['volume_attachment']:
+            self._vcloud_client.attach_disk_to_vm(src_vapp_name, src_disk_ref)
         self._vcloud_client.power_off_vapp(vapp_name)
         self._vcloud_client.delete_vapp(vapp_name)
 
@@ -420,8 +457,8 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         # 3.get referenced file url
         referenced_file_url = self._vcloud_client._invoke_vapp_api(the_vapp, 'get_referenced_file_url',ovf)
         if not referenced_file_url:
-            raise exception.CinderException(
-                "get vmdk file url failed")
+            raise exception.CinderException("get vmdk file url failed")
+
         return referenced_file_url
 
     def _download_vmdk_from_vcloud(self,context, src_url,dst_file_name):
@@ -449,22 +486,18 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             raise exception.VolumeNotFound(volume_id=vcloud_volume_name)
         # Check whether the volume is attached to vm or not,
         # Make sure the volume is available
-        vms = self._get_disk_attached_vm(vcloud_volume_name)
-        if len(vms) > 0:
-            vm_name = vms[0].get_name()
-            the_vapp = self._vcloud_client._get_vcloud_vapp(vm_name)
-            if the_vapp:
-                self._detach_disk_from_vm(the_vapp, disk_ref)
+        vpp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
+        if vpp_name:
+            self._vcloud_client.detach_disk_from_vm(vpp_name, disk_ref)
         # get the vgw host
         vapp_name = self._vgw_name
-        the_vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
         # attach volume to vgw when the vgw is in stopped status
-        if self._attach_disk_to_vm(the_vapp, disk_ref):
+        if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
             LOG.info("Volume %(volume_name)s attached to "
                      "vgw host: %(instance_name)s",
                      {'volume_name': vcloud_volume_name,
                       'instance_name': vapp_name})
-        return disk_ref, the_vapp
+        return disk_ref, vapp_name
 
     def _get_management_url(self, kc, image_name, **kwargs):
         endpoint_info= kc.service_catalog.get_endpoints(**kwargs)
@@ -558,7 +591,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         container_format = image_meta.get('container_format')
         if container_format in VGW_URLS:
             # attach the volume to vgw vm
-            disk_ref, the_vapp = self._attach_volume_to_vgw(volume)
+            disk_ref, vapp_name = self._attach_volume_to_vgw(volume)
 
             try:
                 # use ssh client connect to vgw_host and
@@ -566,7 +599,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
                 self._copy_volume_to_file_to_vgw(image_meta)
             finally:
                 # detach volume from vgw and
-                self._detach_disk_from_vm(the_vapp, disk_ref)
+                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
             # create an empty file to glance
             with image_utils.temporary_file() as tmp:
                 image_utils.upload_volume(context,
@@ -578,65 +611,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
                       (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
 
         else:
-            def _unused():
-                # todo(wangfeng)
-                # 1. get the vmdk file.
-
-                volume_id = volume['id']
-                if volume['attach_status']=='attached':
-                    # nova_client = nova.novaclient(context)
-                    # node_name = nova_client.servers.get(instance_id)._
-                    # info['OS-EXT-SRV-ATTR:hypervisor_hostname']
-                    the_vapp = self._vcloud_client._get_vcloud_vapp(volume['instance_uuid'])
-                    vmdk_url = self._query_vmdk_url(the_vapp)
-                    local_file_name = '%s/%s.vmdk' % (CONF.vcloud.vcloud_conversion_dir, volume_id)
-                    self._download_vmdk_from_vcloud(context, vmdk_url,local_file_name)
-
-                    # volume_id = volume['id']
-                    # create_info = {'snapshot_id':volume['snapshot_id'],
-                    #              'type':'qcow2',
-                    #             'new_file':'snapshot_file'}
-
-                    # self._nova_api.create_volume_snapshot(context,volume_id,create_info)
-                    # local_file_name = '%s/%s.vmdk' % (CONVERT_DIR, volume_id)
-                else:
-                    local_file_name = '%s/%s.vmdk' % (CONF.vcloud.vcloud_volumes_dir, volume_id)
-                    if not os.path.exists(local_file_name):
-                        LOG.error('volume file %s do not exist' % local_file_name)
-                        return
-
-                # 1. the file is vmdk, convert it to qcow2
-                # converted_file_name = '%s/converted-file.qcow2' %
-                # CONF.vcloud.vcloud_conversion_dir
-                # convert_commond = "qemu-img convert -f %s -O %s %s %s" % \
-                #                      ('vmdk',
-                #                     'qcow2',
-                #                    local_file_name,
-                #                   converted_file_name)
-                # convert_result = subprocess.call([convert_commond],shell=True)
-                # if convert_result != 0:
-                # do something, change metadata
-                # LOG.error('converting file failed')
-
-                # 2. upload to glance
-
-                # file_size = os.path.getsize(converted_file_name)
-
-                # The properties and other fields that we need to set for the image.
-                # image_meta['disk_format'] = 'qcow2'
-                # image_meta['status'] = 'active'
-                # image_meta['size'] = file_size
-                # image_meta['properties'] = {'owner_id': volume['project_id']}
-
-                # image_utils.upload_volume(context,image_service,image_meta,converted_file_name,'qcow2')
-
-                image_utils.upload_volume(context,image_service,image_meta,local_file_name,'vmdk')
-
-                # timeout = IMAGE_TRANSFER_TIMEOUT_SECS
-                # util.start_transfer(context, timeout, read_file_handle, file_size,
-                #          image_service=image_service, image_id=image_meta['id'],
-                #         image_meta=image_meta)
-            _unused()
+            pass
 
     @RetryDecorator(max_retry_count=CONF.vcloud.vcloud_api_retry_count,
                     exceptions=(sshclient.SSHError,
@@ -647,7 +622,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
             ssh_client = sshclient.SSH(user=self._vgw_username,
                                        host=self._vgw_host,
                                        password=self._vgw_password)
- 
+
             cmd = '/usr/bin/rescan-scsi-bus.sh -a -r'
             ssh_client.run(cmd)
 
@@ -683,7 +658,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         container_format = image_meta.get('container_format')
         if container_format in VGW_URLS:
-            disk_ref, the_vapp = self._attach_volume_to_vgw(volume)
+            disk_ref, vapp_name = self._attach_volume_to_vgw(volume)
             # start the vgw, so it can recognize the volume
             #   (vcloud does not support online attach or detach volume)
             # self._vcloud_client.power_on_vapp(the_vapp)
@@ -700,7 +675,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
                                          time.localtime())))
             finally:
                 # detach volume from vgw and
-                self._detach_disk_from_vm(the_vapp, disk_ref)
+                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
             # shutdown the vgw, do some clean env work
             # self._vcloud_client.power_off_vapp(the_vapp)

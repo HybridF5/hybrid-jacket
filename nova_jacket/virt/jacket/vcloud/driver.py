@@ -29,6 +29,7 @@ from nova.i18n import _
 from nova.network import neutronv2
 from nova.compute import power_state
 from nova.compute import task_states
+from nova.context import RequestContext
 from nova.openstack.common import fileutils
 from nova.volume.cinder import API as cinder_api
 from nova.openstack.common import log as logging
@@ -138,8 +139,8 @@ vcloudapi_opts = [
 
 status_dict_vapp_to_instance = {
     VCLOUD_STATUS.FAILED_CREATION: power_state.CRASHED,
-    VCLOUD_STATUS.UNRESOLVED: power_state.BUILDING,
-    VCLOUD_STATUS.RESOLVED: power_state.BUILDING,
+    VCLOUD_STATUS.UNRESOLVED: power_state.NOSTATE,
+    VCLOUD_STATUS.RESOLVED: power_state.NOSTATE,
     VCLOUD_STATUS.DEPLOYED: power_state.NOSTATE,
     VCLOUD_STATUS.SUSPENDED: power_state.SUSPENDED,
     VCLOUD_STATUS.POWERED_ON: power_state.RUNNING,
@@ -168,7 +169,7 @@ LOG = logging.getLogger(__name__)
 
 
 IMAGE_API = image.API()
-  
+
 def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, exceptions=()):
     def handle_func(func):
         def handle_args(*args, **kwargs):
@@ -248,7 +249,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         LOG.debug(_("network_info is %s") % network_info)
         LOG.debug(_("block_device_info is %s") % block_device_info)
         LOG.info('begin time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
-        
+
         if not instance.image_ref:
             self._spawn_from_volume(context, instance, image_meta, injected_files,
                                     admin_password, network_info, block_device_info)
@@ -348,26 +349,26 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                     if result:
                         LOG.debug("Find volume successful, disk name is: %(disk_name)s"
                                   "disk ref's href is: %(disk_href)s.",
-                                  {'disk_name': vcloud_volume_name,
-                                   'disk_href': disk_ref.href})
-                    
+                                  {'disk_name': vcloud_volume_name, 'disk_href': disk_ref.href})
+
                         odevs = set(client.list_volume()['devices'])
                         LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
                     
                         if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
                             LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
-                                     {'volume_name': vcloud_volume_name,
-                                      'instance_name': vapp_name})
-                        
+                                     {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
+
                         ndevs = set(client.list_volume()['devices'])
                         LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
-            
+
                         devs = ndevs - odevs
                         for dev in devs:
-                            #client.attach_volume(volume_id, dev, mount_device)
-                            pass
+                            client.attach_volume(volume_id, dev, mount_device)
                     else:
                         LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
+
+                if injected_files:
+                    client.inject_files(injected_files)
 
             except (errors.NotFound, errors.APIError) as e:
                 LOG.error("instance %s spawn from volume failed, reason %s"%(vapp_name, e))
@@ -419,7 +420,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
         # update network
         self._vcloud_client.update_vms_connections(vapp, network_connections)
-    
+
         # update vm specification
         self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
         self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
@@ -429,7 +430,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             rabbit_host = CONF.rabbit_hosts[0]
         if ':' in rabbit_host:
             rabbit_host = rabbit_host[0:rabbit_host.find(':')]
-        
+
         if not is_hybrid_vm:
             this_conversion_dir = '%s/%s' % (CONF.vcloud.vcloud_conversion_dir, 
                                              instance.uuid)
@@ -449,7 +450,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                                                                    vapp_name)
             # mount it
             self._vcloud_client.insert_media(vapp_name, metadata_iso)
-            
+
             # 7. clean up
             shutil.rmtree(this_conversion_dir, ignore_errors=True)
         else:
@@ -519,13 +520,16 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
                         devs = ndevs - odevs
                         for dev in devs:
-                            #client.attach_volume(volume_id, dev, mount_device)
-                            pass
+                            client.attach_volume(volume_id, dev, mount_device)
                     else:
                         LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
+
+                if injected_files:
+                    client.inject_files(injected_files)
+
             except (errors.NotFound, errors.APIError) as e:
                 LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
- 
+
         # update port bind host
         self._binding_host(context, network_info, instance.uuid)
 
@@ -536,6 +540,13 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         for vif in network_info:
             neutron.update_port(vif.get('id'), port_req_body)
 
+    @staticmethod
+    def _binding_host_vif(vif, host_id):
+        context = RequestContext('user_id', 'project_id')
+        neutron = neutronv2.get_client(context, admin=True)
+        port_req_body = {'port': {'binding:host_id': host_id}}
+        neutron.update_port(vif.get('id'), port_req_body)
+
     def _get_vcloud_vapp_name(self, instance):
         if CONF.vcloud.vcloud_vm_naming_rule == 'openstack_vm_id':
             return instance.uuid
@@ -545,7 +556,7 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             return instance.display_name
         else:
             return instance.uuid
-    
+
     def _get_vcloud_volume_name(self, volume_id, volume_name):
         prefix = 'volume@'
         if volume_name.startswith(prefix):
@@ -745,7 +756,8 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
 
     def attach_interface(self, instance, image_meta, vif):
         LOG.debug("attach interface: %s, %s" % (instance, vif))
-        
+        self._binding_host_vif(vif, instance.uuid)
+
         if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
                 and self._instance_is_active(instance):
             vapp_name = self._get_vcloud_vapp_name(instance)
@@ -753,9 +765,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
             client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
             client.attach_interface(vif)
 
+        self._binding_host_vif(vif, instance.uuid)
+
     def detach_interface(self, instance, vif):
         LOG.debug("detach interface: %s, %s" % (instance, vif))
-        
+
         if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM \
                 and self._instance_is_active(instance):
             vapp_name = self._get_vcloud_vapp_name(instance)

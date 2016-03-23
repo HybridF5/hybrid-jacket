@@ -110,7 +110,7 @@ class HyperAgentAPI(object):
                     LOG.debug('HyperAgentAPI:plug - Max retries exceeded,'
                               'raising exception')
                     raise e
-        
+
     def unplug(self, instance_id, hyper_vif):
         """
         Disconnects an instance

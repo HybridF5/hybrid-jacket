@@ -29,7 +29,7 @@ from pyvcloud.vapp import VAPP as sdk_vapp
 from pyvcloud.vcloudair import VCA as sdk_vca
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud import vAppType, \
     organizationListType, vdcType, catalogType, queryRecordViewType, \
-    networkType, vcloudType, taskType, vAppTemplateType
+    networkType, vcloudType, taskType, vAppTemplateType, vmsType
 from pyvcloud.schema.vcd.v1_5.schemas.vcloud.networkType import IpScopeType,\
     OrgVdcNetworkType, ReferenceType, NetworkConfigurationType, \
     IpScopesType, IpRangesType, IpRangeType, DhcpPoolServiceType
@@ -485,7 +485,7 @@ class VCA(sdk_vca):
         if not vapp:
             LOG.error("cannot get vapp %s info" % vapp_name)
             raise exceptions.ForbiddenException("cannot get vapp %s info" % vapp_name)
-    
+
         return VAPP(vapp.me, vapp.headers, vapp.verify)
 
     def get_media(self, catalog_name, media_name):
@@ -544,7 +544,45 @@ class VCA(sdk_vca):
             network_configs.append(network_config)
 
         return network_configs
+    
+    def get_disk_attached_vapp(self, vdc_name, disk_name):
+        '''
+        '''
 
+        found = False
+        disks = self.get_disks(vdc_name)
+        for disk, vms in disks:
+            if disk.get_name() == disk_name:
+                found = True
+                break
+
+        if not found:
+            return []
+        
+        vapps = []
+        for vm in vms:
+            response = self._invoke_api(requests, 'get',
+                            vm.get_href(), 
+                            headers=self.vcloud_session.get_vcloud_headers(),
+                            verify=self.verify)
+            if response.status_code == requests.codes.ok:
+                vm = vmsType.parseString(response.content, True)
+
+                vapp_links = filter(lambda link: link.get_type() == "application/vnd.vmware.vcloud.vApp+xml", vm.get_Link())
+                if len(vapp_links) == 1:
+                    response = self._invoke_api(requests, 'get',
+                                vapp_links[0].get_href(), 
+                                headers=self.vcloud_session.get_vcloud_headers(),
+                                verify=self.verify)
+                    if response.status_code == requests.codes.ok:
+                        vapp = vAppType.parseString(response.content, True)
+                        vapps.append(vapp.get_name())
+                    else:
+                        raise exceptions.VCloudDriverException('Can not find vapp information')
+            else:
+                raise exceptions.VCloudDriverException('Can not find vm information')
+
+        return vapps
 
     def session_is_active(self):
         """If session is not active, this will return false, else

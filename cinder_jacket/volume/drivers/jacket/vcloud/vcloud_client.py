@@ -5,6 +5,7 @@ from oslo.utils import units
 
 from cinder import exception
 from cinder.openstack.common import log as logging
+from cinder.volume.drivers.jacket.vcloud import constants
 from cinder.volume.drivers.jacket.vcloud import exceptions
 from cinder.volume.drivers.jacket.vcloud.vcloud import RetryDecorator
 from cinder.volume.drivers.jacket.vcloud.vcloud import VCloudAPISession
@@ -95,7 +96,7 @@ class VCloudClient(object):
         @RetryDecorator(max_retry_count=60,
                         exceptions=exception.CinderException)
         def _power_off(vapp_name):
-            expected_vapp_status = 8
+            expected_vapp_status = constants.VM_POWER_OFF_STATUS
             the_vapp = self._get_vcloud_vapp(vapp_name)
             vapp_status = self._get_status_first_vm(the_vapp)
             if vapp_status == expected_vapp_status:
@@ -133,7 +134,7 @@ class VCloudClient(object):
             the_vapp = self._get_vcloud_vapp(vapp_name)
 
             vapp_status = self._get_status_first_vm(the_vapp)
-            expected_vapp_status = 4
+            expected_vapp_status = constants.VM_POWER_ON_STATUS
             if vapp_status == expected_vapp_status:
                 return the_vapp
 
@@ -168,7 +169,7 @@ class VCloudClient(object):
         self._session.wait_for_task(task)
         the_vdc = self._session.invoke_api(self._session.vca, "get_vdc", self.vdc)
 
-        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)        
+        return self._session.invoke_api(self._session.vca, "get_vapp", the_vdc, vapp_name)
 
     def delete_vapp(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
@@ -188,11 +189,14 @@ class VCloudClient(object):
 
     def get_vapp_ip(self, vapp_name):
         the_vapp = self._get_vcloud_vapp(vapp_name)
-        vms_network_info = self._invoke_vapp_api(the_vapp, "get_vms_network_info")
-        if vms_network_info:
-            return vms_network_info[0][0]['ip']
-        else:
-            return None
+        vms_network_infos = self._invoke_vapp_api(the_vapp, "get_vms_network_info")
+
+        for vm_network_infos in vms_network_infos:
+            for vm_network_info in vm_network_infos:
+                if vm_network_info['ip']:
+                    return vm_network_info['ip']
+
+        return None
 
     def create_volume(self, disk_name, disk_size):
         result, resp = self._session.invoke_api(self._session.vca, "add_disk", self.vdc, disk_name, int(disk_size) * units.Gi)
@@ -262,6 +266,11 @@ class VCloudClient(object):
 
         self._session.wait_for_task(task)
 
-    def get_disks(self):
-        disks = self._invoke_api('get_disks', self._get_vcloud_vdc())
-        return disks
+    def get_disk_attached_vapp(self, disk_name):
+        vapps = self._invoke_api('get_disk_attached_vapp', self.vdc, disk_name)
+        
+        if len(vapps) == 1:
+            return vapps[0]
+        else:
+            return None
+
