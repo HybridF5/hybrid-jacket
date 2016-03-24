@@ -188,6 +188,7 @@ def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, e
                     return retry_count, sleep_time
             while (max_retry_count == -1 or retry_count < max_retry_count):
                 try:
+                    LOG.debug('_retry_decorator func %s times %s', func, retry_count)
                     result = func(*args, **kwargs)
                     if not result:
                         retry_count, sleep_time = _sleep(retry_count, sleep_time)
@@ -352,15 +353,11 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                                   {'disk_name': vcloud_volume_name, 'disk_href': disk_ref.href})
 
                         odevs = set(client.list_volume()['devices'])
-                        LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
-                    
                         if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
                             LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                                      {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
 
                         ndevs = set(client.list_volume()['devices'])
-                        LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
-
                         devs = ndevs - odevs
                         for dev in devs:
                             client.attach_volume(volume_id, dev, mount_device)
@@ -508,16 +505,12 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
                                    'disk_href': disk_ref.href})
 
                         odevs = set(client.list_volume()['devices'])
-                        LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
-
                         if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
                             LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                                      {'volume_name': vcloud_volume_name,
                                       'instance_name': vapp_name})
 
                         ndevs = set(client.list_volume()['devices'])
-                        LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
-
                         devs = ndevs - odevs
                         for dev in devs:
                             client.attach_volume(volume_id, dev, mount_device)

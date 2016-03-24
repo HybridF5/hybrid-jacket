@@ -178,6 +178,7 @@ def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, e
                     return retry_count, sleep_time
             while (max_retry_count == -1 or retry_count < max_retry_count):
                 try:
+                    LOG.debug('_retry_decorator func %s times %s', func, retry_count)
                     result = func(*args, **kwargs)
                     if not result:
                         retry_count, sleep_time = _sleep(retry_count, sleep_time)
@@ -211,9 +212,13 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
         self._vgw_store_file_dir = CONF.vgw.store_file_dir
 
     def _get_vcloud_volume_name(self, volume_id, volume_name):
-        prefix = 'volume@'
-        if volume_name.startswith(prefix):
-            vcloud_volume_name = volume_name[len(prefix):]
+        volume_prefix = 'volume@'
+        snapshot_prefix = 'snapshot@'
+
+        if volume_name.startswith(volume_prefix):
+            vcloud_volume_name = volume_name[len(volume_prefix):]
+        elif volume_name.startswith(snapshot_prefix):
+            vcloud_volume_name = volume_name[len(snapshot_prefix):]
         else:
             vcloud_volume_name = volume_id
 
@@ -243,8 +248,7 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
     def delete_volume(self, volume):
         """Delete a volume."""
         volume_name = volume['display_name']
-        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'],
-                                                          volume_name)
+        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
         LOG.debug('Deleting volume %s', vcloud_volume_name)
 
         self._vcloud_client.delete_volume(vcloud_volume_name)
@@ -258,105 +262,98 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
         LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
 
-        src_volume_name = src_vref['display_name']
-        src_vcloud_volume_name = self._get_vcloud_volume_name(src_vref['id'], src_volume_name)
-        result, src_disk_ref = self._vcloud_client.get_disk_ref(src_vcloud_volume_name)
-        
+        vcloud_volume_name = self._get_vcloud_volume_name(src_vref['id'], src_vref['display_name'])
+        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+
         if src_vref['volume_attachment']:
-            src_vapp_name = self._vcloud_client.get_disk_attached_vapp(src_vcloud_volume_name)
-            src_vapp = self._vcloud_client._get_vcloud_vapp(src_vapp_name)
-            if self._vcloud_client._get_status_first_vm(src_vapp) != constants.VM_POWER_OFF_STATUS:
+            vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
+            vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
+            if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
                 msg = "when source volume is attached, the vm must be in power off state"
                 LOG.info(msg)
                 raise exception.CinderException(msg)
-                
-            self._vcloud_client.detach_disk_from_vm(src_vapp_name, src_disk_ref)
-            
-        volume_name = volume['display_name']
-        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
 
-        LOG.debug('Creating volume %(name)s of size %(size)s Gb',
-                  {'name': vcloud_volume_name, 'size': volume['size']})
+            self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
-        self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
-        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+        cloned_volume_name = volume['display_name']
+        cloned_vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], cloned_volume_name)
+
+        LOG.debug('Creating volume %(name)s of size %(size)s Gb', {'name': cloned_vcloud_volume_name, 'size': volume['size']})
+
+        self._vcloud_client.create_volume(cloned_vcloud_volume_name, volume['size'])
+        result, cloned_disk_ref = self._vcloud_client.get_disk_ref(cloned_vcloud_volume_name)
 
         #NOTE(nkapotoxin): create vapp with vapptemplate
         network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
         network_configs = self._vcloud_client.get_network_configs(network_names)
 
         # create vapp
-        vapp_name = 'server@%s' % vcloud_volume_name
-        vapp = self._vcloud_client.create_vapp(vapp_name, CONF.vcloud.base_image_id, network_configs)
+        cloned_vapp_name = 'server@%s' % cloned_vcloud_volume_name
+        clone_vapp = self._vcloud_client.create_vapp(cloned_vapp_name, CONF.vcloud.base_image_id, network_configs)
 
         # generate the network_connection
-        network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
+        network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
 
         # update network
-        self._vcloud_client.update_vms_connections(vapp, network_connections)
+        self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
 
-        if vapp_name.startswith('server@'):
-            local_disk_name = 'Local@%s' % vapp_name[len('server@'):]
+        if cloned_vapp_name.startswith('server@'):
+            local_disk_name = 'Local@%s' % cloned_vapp_name[len('server@'):]
         else:
-            local_disk_name = 'Local@%s' % vapp_name
+            local_disk_name = 'Local@%s' % cloned_vapp_name
 
         self._vcloud_client.create_volume(local_disk_name, 1)
         result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
         if result:
-            self._vcloud_client.attach_disk_to_vm(vapp_name, local_disk_ref)
+            self._vcloud_client.attach_disk_to_vm(cloned_vapp_name, local_disk_ref)
         else:
             LOG.error(_('Unable to find volume %s to instance'),local_disk_name)
 
         # power on it
-        self._vcloud_client.power_on_vapp(vapp_name)
+        self._vcloud_client.power_on_vapp(cloned_vapp_name)
 
-        vapp_ip = self.get_vapp_ip(vapp_name)
+        vapp_ip = self.get_vapp_ip(cloned_vapp_name)
         self._wait_hybrid_service_up(vapp_ip, port=CONF.vcloud.hybrid_service_port)
 
         client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
         try:
-
             odevs = set(client.list_volume()['devices'])
-            LOG.info('volume_name %s odevs: %s', src_volume_name, odevs)
-
-            if self._vcloud_client.attach_disk_to_vm(vapp_name, src_disk_ref):
+            if self._vcloud_client.attach_disk_to_vm(cloned_vapp_name, disk_ref):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
-                        {'volume_name': src_volume_name, 'instance_name': vapp_name})
+                        {'volume_name': vcloud_volume_name, 'instance_name': cloned_vapp_name})
 
             ndevs = set(client.list_volume()['devices'])
-            LOG.info('volume_name %s ndevs: %s', src_volume_name, ndevs)
-
             devs = ndevs - odevs
             for dev in devs:
                 client.attach_volume(src_vref['id'], dev, 'dev/sde')
 
             odevs = set(client.list_volume()['devices'])
-            LOG.info('volume_name %s odevs: %s', vcloud_volume_name, odevs)
-            
-            if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
+            if self._vcloud_client.attach_disk_to_vm(cloned_vapp_name, cloned_disk_ref):
                 LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
-                        {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
-            
+                        {'volume_name': cloned_vcloud_volume_name, 'instance_name': cloned_vapp_name})
+
             ndevs = set(client.list_volume()['devices'])
-            LOG.info('volume_name %s ndevs: %s', vcloud_volume_name, ndevs)
-            
             devs = ndevs - odevs
             for dev in devs:
                 client.attach_volume(volume['id'], dev, 'dev/sdf')
 
             task = client.clone_volume(volume, src_vref)
+            loop = 0
             while client.query_task(task) == client_constants.TASK_DOING:
-                time.sleep(10)
+                loop += 1
+                print '----------------------------%s------------------' % loop
+                time.sleep(30)
 
         except (errors.NotFound, errors.APIError) as e:
-            LOG.error("instance %s spawn from image failed, reason %s"% (vapp_name, e))
+            LOG.error("create cloned volume, reason %s" % e)
 
-        self._vcloud_client.detach_disk_from_vm(vapp_name, src_disk_ref)
-        self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
+        self._vcloud_client.detach_disk_from_vm(cloned_vapp_name, disk_ref)
         if src_vref['volume_attachment']:
-            self._vcloud_client.attach_disk_to_vm(src_vapp_name, src_disk_ref)
-        self._vcloud_client.power_off_vapp(vapp_name)
-        self._vcloud_client.delete_vapp(vapp_name)
+            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+        self._vcloud_client.detach_disk_from_vm(cloned_vapp_name, local_disk_ref)
+        self._vcloud_client.detach_disk_from_vm(cloned_vapp_name, cloned_disk_ref)
+        self._vcloud_client.power_off_vapp(cloned_vapp_name)
+        self._vcloud_client.delete_vapp(cloned_vapp_name)
         self._vcloud_client.delete_volume(local_disk_name)
 
     def extend_volume(self, volume, new_size):
@@ -365,37 +362,117 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
     def create_snapshot(self, snapshot):
         """Create a snapshot."""
-        # todo(wangfeng)
-        
-        # volume_name = snapshot.get('volume_id')
-        # snapshot_arn = self.aws_sg.createSnapshot(volume_name)
-        # return {'provider_location': snapshot_arn}
-        context = snapshot['context']
-        volume_id = snapshot['volume_id']
-        # create_info = {'snapshot_id':snapshot['id'],
-        #               'type':'vmdk',
-        #              'new_file':'snapshot_file'}
 
-        # self._nova_api.create_volume_snapshot(ctx,volume_id,create_info)
+        LOG.debug('create snapshot: %s', vars(snapshot))
 
-        volume = snapshot.volume
-        if volume['attach_status']=='attached':
-            the_vapp = self._vcloud_client._get_vcloud_vapp(volume['instance_uuid'])
-            vmdk_url = self._query_vmdk_url(the_vapp)
-            local_file_name = '%s/%s.vmdk' % (CONF.vcloud.vcloud_conversion_dir, volume_id)
-            self._download_vmdk_from_vcloud(context, vmdk_url,local_file_name)
+        vcloud_volume_name = self._get_vcloud_volume_name(snapshot['volume_id'], snapshot['volume']['display_name'])
+        result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
 
+        if snapshot['volume']['attach_status'] == 'attached':
+            vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
+            vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
+            if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
+                msg = "when volume is attached, the vm must be in power off state"
+                LOG.info(msg)
+                raise exception.CinderException(msg)
+
+            self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
+
+        snapshot_name = snapshot['display_name']
+        snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
+
+        LOG.debug('Creating snapshot volume %(name)s of size %(size)s Gb',  {'name': snapshot_volume_name, 'size': snapshot['volume_size']})
+
+        self._vcloud_client.create_volume(snapshot_volume_name, snapshot['volume_size'])
+        result, snapshot_disk_ref = self._vcloud_client.get_disk_ref(snapshot_volume_name)
+
+        #NOTE(nkapotoxin): create vapp with vapptemplate
+        network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+        network_configs = self._vcloud_client.get_network_configs(network_names)
+
+        # create vapp
+        snapshot_vapp_name = 'server@%s' % snapshot_volume_name
+        snapshot_vapp = self._vcloud_client.create_vapp(snapshot_vapp_name, CONF.vcloud.base_image_id, network_configs)
+
+        # generate the network_connection
+        network_connections = self._vcloud_client.get_network_connections(snapshot_vapp, network_names)
+
+        # update network
+        self._vcloud_client.update_vms_connections(snapshot_vapp, network_connections)
+
+        if snapshot_vapp_name.startswith('server@'):
+            local_disk_name = 'Local@%s' % snapshot_vapp_name[len('server@'):]
         else:
-            local_file_name = '%s/%s.vmdk' % (CONF.vcloud.vcloud_volumes_dir, volume_id)
-            if not os.path.exists(local_file_name):
-                LOG.error('volume file %s do not exist' % local_file_name)
+            local_disk_name = 'Local@%s' % snapshot_vapp_name
+        
+        self._vcloud_client.create_volume(local_disk_name, 1)
+        result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
+        if result:
+            self._vcloud_client.attach_disk_to_vm(snapshot_vapp_name, local_disk_ref)
+        else:
+            LOG.error(_('Unable to find volume %s to instance'),local_disk_name)
 
-        # image_utils.upload_volume(context,image_service,image_meta,local_file_name,'vmdk')
+        # power on it
+        self._vcloud_client.power_on_vapp(snapshot_vapp_name)
+
+        vapp_ip = self.get_vapp_ip(snapshot_vapp_name)
+        self._wait_hybrid_service_up(vapp_ip, port=CONF.vcloud.hybrid_service_port)
+
+        client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
+        try:
+            odevs = set(client.list_volume()['devices'])        
+            if self._vcloud_client.attach_disk_to_vm(snapshot_vapp_name, disk_ref):
+                LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                        {'volume_name': vcloud_volume_name, 'instance_name': snapshot_vapp_name})
+
+            ndevs = set(client.list_volume()['devices'])        
+            devs = ndevs - odevs
+            for dev in devs:
+                client.attach_volume(snapshot['volume_id'], dev, 'dev/sde')
+
+            odevs = set(client.list_volume()['devices'])            
+            if self._vcloud_client.attach_disk_to_vm(snapshot_vapp_name, snapshot_disk_ref):
+                LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                        {'volume_name': snapshot_volume_name, 'instance_name': snapshot_vapp_name})
+
+            ndevs = set(client.list_volume()['devices'])            
+            devs = ndevs - odevs
+            for dev in devs:
+                client.attach_volume(snapshot['id'], dev, 'dev/sdf')
+
+            volume = {}
+            src_vref = {}
+            volume['id'] = snapshot['id']
+            volume['size'] = snapshot['volume_size']
+            src_vref = volume
+            task = client.clone_volume(volume, src_vref)
+            loop = 0
+            while client.query_task(task) == client_constants.TASK_DOING:
+                loop += 1
+                print '----------------------------%s------------------' % loop
+                time.sleep(30)
+
+        except (errors.NotFound, errors.APIError) as e:
+            LOG.error("create snap shot failed reason %s "% e)
+        
+        self._vcloud_client.detach_disk_from_vm(snapshot_vapp_name, disk_ref)
+        if snapshot['volume']['attach_status'] == 'attached':
+            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+
+        self._vcloud_client.detach_disk_from_vm(snapshot_vapp_name, snapshot_disk_ref)
+        self._vcloud_client.detach_disk_from_vm(snapshot_vapp_name, local_disk_ref)
+        self._vcloud_client.power_off_vapp(snapshot_vapp_name)
+        self._vcloud_client.delete_vapp(snapshot_vapp_name)
+        self._vcloud_client.delete_volume(local_disk_name)
 
     def delete_snapshot(self, snapshot):
         """Delete a snapshot."""
-        # todo(wangfeng)
-        pass
+
+        snapshot_name = snapshot['display_name']
+        snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
+
+        LOG.debug('Deleting volume %s', snapshot_volume_name)
+        self._vcloud_client.delete_volume(snapshot_volume_name)
 
     def get_volume_stats(self, refresh=False):
         """Get volume stats."""

@@ -215,7 +215,7 @@ class VCloudClient(object):
             LOG.info('delete volume : %s success', disk_name)
         else:
             if resp == 'disk not found':
-                LOG.warning('delete_volume: unable to find volume %(name)s', {'name': disk_name})
+                LOG.warning('delete volume: unable to find volume %(name)s', {'name': disk_name})
             else:
                 raise exception.NovaException("Unable to delete volume %s" % disk_name)
 

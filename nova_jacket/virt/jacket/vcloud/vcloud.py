@@ -575,7 +575,7 @@ class VCA(sdk_vca):
                                 headers=self.vcloud_session.get_vcloud_headers(),
                                 verify=self.verify)
                     if response.status_code == requests.codes.ok:
-                        vapp = vappType.parseString(response.content, True)
+                        vapp = vAppType.parseString(response.content, True)
                         vapps.append(vapp.get_name())
                     else:
                         raise exceptions.VCloudDriverException('Can not find vapp information')

@@ -268,7 +268,7 @@ class VCloudClient(object):
 
     def get_disk_attached_vapp(self, disk_name):
         vapps = self._invoke_api('get_disk_attached_vapp', self.vdc, disk_name)
-        
+
         if len(vapps) == 1:
             return vapps[0]
         else:
