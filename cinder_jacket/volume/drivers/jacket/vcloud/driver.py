@@ -441,10 +441,11 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
                 client.attach_volume(snapshot['id'], dev, 'dev/sdf')
 
             volume = {}
-            src_vref = {}
             volume['id'] = snapshot['id']
             volume['size'] = snapshot['volume_size']
-            src_vref = volume
+            src_vref = {}
+            src_vref['id'] = snapshot['volume_id']
+            src_vref['size'] = snapshot['volume_size']
             task = client.clone_volume(volume, src_vref)
             loop = 0
             while client.query_task(task) == client_constants.TASK_DOING:
@@ -756,7 +757,8 @@ class VMwareVcloudVolumeDriver(driver.VolumeDriver):
 
             # shutdown the vgw, do some clean env work
             # self._vcloud_client.power_off_vapp(the_vapp)
-        elif container_format == 'hybridvm':
+        elif container_format == constants.HYBRID_VM:
+            #if container formate eq hybrivm, doing nothing
             pass
 
         LOG.debug('Finished copy image %(image_name)s '

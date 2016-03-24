@@ -223,12 +223,9 @@ class VCloudDriver(fake_driver.FakeNovaDriver):
         #begin test
         disk_refs = self._vcloud_client._invoke_api('get_diskRefs',
                                      self._vcloud_client._get_vcloud_vdc())
-        print '---------------------------------------------------------------------------------------------'
-        print '---------------------------------------------------------------------------------------------'
         for disk_ref in disk_refs:
-            print vars(disk_ref)
-        print '---------------------------------------------------------------------------------------------'
-        print '---------------------------------------------------------------------------------------------'
+            #self._vcloud_client.delete_volume(disk_ref.get_name())
+            pass
         #end test
 
     def _update_vm_task_state(self, instance, task_state):
