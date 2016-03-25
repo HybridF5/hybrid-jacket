@@ -4,4 +4,4 @@
 
 from cinder.volume.drivers.jacket.vcloud import driver
 
-VCloudDriver = driver.VMwareVcloudVolumeDriver
+VCloudVolumeDriver = driver.VCloudVolumeDriver
