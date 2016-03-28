@@ -276,7 +276,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
         #NOTE(nkapotoxin): create vapp with vapptemplate
         network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
         network_configs = self._vcloud_client.get_network_configs(network_names)
-        
+
         # create vapp
         clone_vapp_name = 'server@%s' % vcloud_volume_name
         clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
@@ -286,7 +286,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
 
         # update network
         self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
-        
+
         if clone_vapp_name.startswith('server@'):
             local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
         else:

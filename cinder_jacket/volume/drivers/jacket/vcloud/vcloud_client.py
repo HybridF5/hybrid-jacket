@@ -273,4 +273,3 @@ class VCloudClient(object):
             return vapps[0]
         else:
             return None
-

@@ -31,4 +31,3 @@ VM_CREATING = 'vm_creating'       # create and power on vm
 EXPORTING = 'exporting'
 UPLOADING = 'uploading'
 PROVIDER_PREPARING = 'provider_preparing'
-
