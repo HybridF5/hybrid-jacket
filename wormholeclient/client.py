@@ -15,10 +15,9 @@ class Client(
     api.VersionApiMixin,
     api.ContainerApiMixin,
     api.VolumeApiMixin,
-    api.NetworkApiMixin,
     api.TaskApiMixin,
     api.PersonalityApiMixin):
-    def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS, proxies = { "http": None,  "https": None, }):
+    def __init__(self, host_ip, port=7127, scheme="http", version=None, timeout=constants.DEFAULT_TIMEOUT_SECONDS, proxies={"http": None,  "https": None}):
         super(Client, self).__init__()
 
         if not host_ip:
@@ -43,7 +42,6 @@ class Client(
                     type(version).__name__
                 )
             )
-
 
     def _set_request_timeout(self, kwargs):
         """Prepare the kwargs for an HTTP request by inserting the timeout

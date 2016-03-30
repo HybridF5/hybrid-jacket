@@ -5,6 +5,7 @@ import urllib2
 import traceback
 import subprocess
 from oslo.config import cfg
+from oslo.utils import excutils
 
 from cinder import utils
 from cinder.i18n import _
@@ -186,14 +187,61 @@ def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, e
                     else:
                         return result
                 except exceptions:
-                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
-            
+                    with excutils.save_and_reraise_exception() as ctxt:
+                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                        if max_retry_count == -1 or retry_count < max_retry_count:
+                            ctxt.reraise = False
+
             if max_retry_count != -1 and retry_count >= max_retry_count:
                 LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
                                   {'name': func, 'retry_count': retry_count, 'max_retry_count': max_retry_count})
         return handle_args
     return handle_func
 
+def make_step_decorator(context, instance, update_instance_progress,
+                        total_offset=0):
+    """Factory to create a decorator that records instance progress as a series
+    of discrete steps.
+
+    Each time the decorator is invoked we bump the total-step-count, so after::
+
+        @step
+        def step1():
+            ...
+
+        @step
+        def step2():
+            ...
+
+    we have a total-step-count of 2.
+
+    Each time the step-function (not the step-decorator!) is invoked, we bump
+    the current-step-count by 1, so after::
+
+        step1()
+
+    the current-step-count would be 1 giving a progress of ``1 / 2 *
+    100`` or 50%.
+    """
+    step_info = dict(total=total_offset, current=0)
+
+    def bump_progress():
+        step_info['current'] += 1
+        update_instance_progress(context, instance,
+                                 step_info['current'], step_info['total'])
+
+    def step_decorator(f):
+        step_info['total'] += 1
+
+        @functools.wraps(f)
+        def inner(*args, **kwargs):
+            rv = f(*args, **kwargs)
+            bump_progress()
+            return rv
+
+        return inner
+
+    return step_decorator
 
 class VCloudVolumeDriver(driver.VolumeDriver):
     VERSION = "1.0"
