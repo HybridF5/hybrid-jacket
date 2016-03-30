@@ -23,9 +23,13 @@ import urllib2
 import sshclient
 import subprocess
 from oslo.config import cfg
+from oslo.utils import excutils
 
+
+from nova import utils
 from nova import image
 from nova.i18n import _
+from nova import exception
 from nova.virt import driver
 from nova.network import neutronv2
 from nova.compute import power_state
@@ -190,20 +194,68 @@ def _retry_decorator(max_retry_count=-1, inc_sleep_time=10, max_sleep_time=10, e
                     return retry_count, sleep_time
             while (max_retry_count == -1 or retry_count < max_retry_count):
                 try:
-                    LOG.debug('_retry_decorator func %s times %s', func, retry_count)
+                    LOG.debug('_retry_decorator func %s times %s', func, retry_count + 1)
                     result = func(*args, **kwargs)
                     if not result:
                         retry_count, sleep_time = _sleep(retry_count, sleep_time)
                     else:
                         return result
                 except exceptions:
-                    retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                    with excutils.save_and_reraise_exception() as ctxt:
+                        retry_count, sleep_time = _sleep(retry_count, sleep_time)
+                        if max_retry_count == -1 or retry_count < max_retry_count:
+                            ctxt.reraise = False
 
             if max_retry_count != -1 and retry_count >= max_retry_count:
                 LOG.error(_("func (%(name)s) exec failed since retry count (%(retry_count)d) reached max retry count (%(max_retry_count)d)."),
                                   {'name': func, 'retry_count': retry_count, 'max_retry_count': max_retry_count})
         return handle_args
     return handle_func
+
+def make_step_decorator(context, instance, update_instance_progress,
+                        total_offset=0):
+    """Factory to create a decorator that records instance progress as a series
+    of discrete steps.
+
+    Each time the decorator is invoked we bump the total-step-count, so after::
+
+        @step
+        def step1():
+            ...
+
+        @step
+        def step2():
+            ...
+
+    we have a total-step-count of 2.
+
+    Each time the step-function (not the step-decorator!) is invoked, we bump
+    the current-step-count by 1, so after::
+
+        step1()
+
+    the current-step-count would be 1 giving a progress of ``1 / 2 *
+    100`` or 50%.
+    """
+    step_info = dict(total=total_offset, current=0)
+
+    def bump_progress():
+        step_info['current'] += 1
+        update_instance_progress(context, instance,
+                                 step_info['current'], step_info['total'])
+
+    def step_decorator(f):
+        step_info['total'] += 1
+
+        @functools.wraps(f)
+        def inner(*args, **kwargs):
+            rv = f(*args, **kwargs)
+            bump_progress()
+            return rv
+
+        return inner
+
+    return step_decorator
 
 class VCloudDriver(driver.ComputeDriver):
     """The VCloud host connection object."""
@@ -306,6 +358,7 @@ class VCloudDriver(driver.ComputeDriver):
 
     def list_instances(self):
         LOG.debug("list_instances")
+        return self.instances.keys()
 
     def list_instance_uuids(self):
         """Return the UUIDS of all the instances known to the virtualization
@@ -365,104 +418,129 @@ class VCloudDriver(driver.ComputeDriver):
               admin_password, network_info=None, block_device_info=None):
         '''
         '''
-        image_cache_dir = CONF.vcloud.vcloud_conversion_dir
+        def _del_vapp():
+            self._vcloud_client.delete_vapp(vapp_name)
 
-        if 'container_format' in image_meta and image_meta['container_format'] == constants.HYBRID_VM:
-            is_hybrid_vm = True
+        def _delete_volume():
+            self._vcloud_client.delete_volume(disk_name)
 
-        # update port bind host
-        self._binding_host(context, network_info, instance.uuid)
+        def _detach_disk_to_vm():
+            for attach_disk_name in attach_disk_names:
+                self._vcloud_client.detach_disk_from_vm(attach_disk_name)
 
-        vapp_name = self._get_vcloud_vapp_name(instance)
+        def _power_off():
+            self._vcloud_client.power_off(vapp_name)
 
-        # 0.get vorg, user name,password vdc  from configuration file (only one
-        # org)
+        undo_mgr = utils.UndoManager()
+        attach_disk_names = []
 
-        # 1.1 get image id, vm info ,flavor info
-        # image_uuid = instance.image_ref
-        if 'id' in image_meta:
-            # create from image
-            image_uuid = image_meta['id']
-        else:
-            # create from volume
-            image_uuid = image_meta['properties']['image_id']
+        try:
+            image_cache_dir = CONF.vcloud.vcloud_conversion_dir
 
-        #NOTE(nkapotoxin): create vapp with vapptemplate
-        network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-        network_configs = self._vcloud_client.get_network_configs(network_names)
+            if 'container_format' in image_meta and image_meta['container_format'] == constants.HYBRID_VM:
+                is_hybrid_vm = True
 
-        # create vapp
-        if is_hybrid_vm:
-            vapp = self._vcloud_client.create_vapp(vapp_name, image_uuid , network_configs)
-        else:
-            vapp = self._vcloud_client.create_vapp(vapp_name,image_uuid , network_configs,
-                                                   root_gb=instance.get_flavor().root_gb)
+            # update port bind host
+            self._binding_host(context, network_info, instance.uuid)
 
-        # generate the network_connection
-        network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
+            vapp_name = self._get_vcloud_vapp_name(instance)
 
-        # update network
-        self._vcloud_client.update_vms_connections(vapp, network_connections)
+            # 0.get vorg, user name,password vdc  from configuration file (only one org)
 
-        # update vm specification
-        self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
-        self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
-
-        rabbit_host = CONF.rabbit_host
-        if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
-            rabbit_host = CONF.rabbit_hosts[0]
-        if ':' in rabbit_host:
-            rabbit_host = rabbit_host[0:rabbit_host.find(':')]
-
-        if not is_hybrid_vm:
-            this_conversion_dir = '%s/%s' % (CONF.vcloud.vcloud_conversion_dir, 
-                                             instance.uuid)
-            fileutils.ensure_tree(this_conversion_dir)
-            os.chdir(this_conversion_dir)
-            #0: create metadata iso and upload to vcloud
-            iso_file = common_tools.create_user_data_iso(
-                "userdata.iso",
-                {"rabbit_userid": CONF.rabbit_userid,
-                 "rabbit_password": CONF.rabbit_password,
-                 "rabbit_host": rabbit_host,
-                 "host": instance.uuid,
-                 "tunnel_cidr": CONF.vcloud.tunnel_cidr,
-                 "route_gw": CONF.vcloud.route_gw},
-                this_conversion_dir)
-            metadata_iso = self._vcloud_client.upload_metadata_iso(iso_file,
-                                                                   vapp_name)
-            # mount it
-            self._vcloud_client.insert_media(vapp_name, metadata_iso)
-
-            # 7. clean up
-            shutil.rmtree(this_conversion_dir, ignore_errors=True)
-        else:
-            #when spawn from image, root_device doesn't exist in bdm, so create local disk as root device
-            if vapp_name.startswith('server@'):
-                disk_name = 'Local@%s' % vapp_name[len('server@'):]
+            # 1.1 get image id, vm info ,flavor info
+            # image_uuid = instance.image_ref
+            if 'id' in image_meta:
+                # create from image
+                image_uuid = image_meta['id']
             else:
-                disk_name = 'Local@%s' % vapp_name
-            self._vcloud_client.create_volume(disk_name, instance.get_flavor().root_gb)
-            result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
-            if result:
-                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+                # create from volume
+                image_uuid = image_meta['properties']['image_id']
+
+            #NOTE(nkapotoxin): create vapp with vapptemplate
+            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+            network_configs = self._vcloud_client.get_network_configs(network_names)
+
+            # create vapp
+            if is_hybrid_vm:
+                vapp = self._vcloud_client.create_vapp(vapp_name, image_uuid , network_configs)
             else:
-                LOG.error(_('Unable to find volume %s to instance'),disk_name)
+                vapp = self._vcloud_client.create_vapp(vapp_name,image_uuid , network_configs,
+                                                       root_gb=instance.get_flavor().root_gb)           
 
-        # power on it
-        self._vcloud_client.power_on_vapp(vapp_name)
+            undo_mgr.undo_with(_del_vapp)
 
-        if is_hybrid_vm:
-            vapp_ip = self.get_vapp_ip(vapp_name)
-            port = CONF.vcloud.hybrid_service_port
-            self._wait_hybrid_service_up(vapp_ip, port)
+            # generate the network_connection
+            network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
 
-            file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
-            file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+            # update network
+            self._vcloud_client.update_vms_connections(vapp, network_connections)
 
-            client = Client(vapp_ip, port = port)
-            try:
+            # update vm specification
+            self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
+            self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
+
+            rabbit_host = CONF.rabbit_host
+            if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
+                rabbit_host = CONF.rabbit_hosts[0]
+            if ':' in rabbit_host:
+                rabbit_host = rabbit_host[0:rabbit_host.find(':')]
+
+            if not is_hybrid_vm:
+                this_conversion_dir = '%s/%s' % (CONF.vcloud.vcloud_conversion_dir, 
+                                                instance.uuid)
+                fileutils.ensure_tree(this_conversion_dir)
+                os.chdir(this_conversion_dir)
+                #0: create metadata iso and upload to vcloud
+                iso_file = common_tools.create_user_data_iso(
+                    "userdata.iso",
+                    {"rabbit_userid": CONF.rabbit_userid,
+                     "rabbit_password": CONF.rabbit_password,
+                     "rabbit_host": rabbit_host,
+                     "host": instance.uuid,
+                     "tunnel_cidr": CONF.vcloud.tunnel_cidr,
+                     "route_gw": CONF.vcloud.route_gw},
+                    this_conversion_dir)
+                metadata_iso = self._vcloud_client.upload_metadata_iso(iso_file,
+                                                                       vapp_name)
+                # mount it
+                self._vcloud_client.insert_media(vapp_name, metadata_iso)
+
+                # 7. clean up
+                shutil.rmtree(this_conversion_dir, ignore_errors=True)
+            else:
+                #when spawn from image, root_device doesn't exist in bdm, so create local disk as root device
+                if vapp_name.startswith('server@'):
+                    disk_name = 'Local@%s' % vapp_name[len('server@'):]
+                else:
+                    disk_name = 'Local@%s' % vapp_name
+                self._vcloud_client.create_volume(disk_name, instance.get_flavor().root_gb)
+
+                undo_mgr.undo_with(_delete_volume)
+                    
+                result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
+                if result:
+                    self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+                else:
+                    msg = _('Unable to find volume %s to instance') % disk_name
+                    LOG.error(msg)
+                    raise exception.NovaException(msg)
+
+                attach_disk_names.append(disk_name)
+                undo_mgr.undo_with(_detach_disk_to_vm)
+
+            # power on it
+            self._vcloud_client.power_on_vapp(vapp_name)
+            undo_mgr.undo_with(_power_off)
+
+            if is_hybrid_vm:
+                vapp_ip = self.get_vapp_ip(vapp_name)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
+                file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
+                file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
 
                 LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
@@ -496,21 +574,25 @@ class VCloudDriver(driver.ComputeDriver):
                                      {'volume_name': vcloud_volume_name,
                                       'instance_name': vapp_name})
 
+                        attach_disk_names.append(vcloud_volume_name)
+
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
                         for dev in devs:
                             client.attach_volume(volume_id, dev, mount_device)
                     else:
-                        LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
+                        msg = _('Unable to find volume %s to instance') % vcloud_volume_name
+                        LOG.error(msg)
+                        raise exception.NovaException(msg)
 
                 if injected_files:
                     client.inject_files(injected_files)
 
-            except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from image failed, reason %s"%(vapp_name, e))
-
-        # update port bind host
-        self._binding_host(context, network_info, instance.uuid)
+            # update port bind host
+            self._binding_host(context, network_info, instance.uuid)
+        except Exception as e:
+            msg = _("Failed to spawn reason %s, rolling back") % e
+            undo_mgr.rollback_and_reraise(msg=msg, instance=instance)            
  
     def _spawn_from_volume(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
@@ -646,6 +728,24 @@ class VCloudDriver(driver.ComputeDriver):
             self._spawn_from_image(context, instance, image_meta, injected_files,
                                     admin_password, network_info, block_device_info)
         LOG.info('end time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+
+    def _update_instance_progress(self, context, instance, step, total_steps):
+        """Update instance progress percent to reflect current step number
+        """
+        # FIXME(sirp): for now we're taking a KISS approach to instance
+        # progress:
+        # Divide the action's workflow into discrete steps and "bump" the
+        # instance's progress field as each step is completed.
+        #
+        # For a first cut this should be fine, however, for large VM images,
+        # the get_vdis_for_instance step begins to dominate the equation. A
+        # better approximation would use the percentage of the VM image that
+        # has been streamed to the destination host.
+        progress = round(float(step) / total_steps * 100)
+        LOG.debug("Updating progress to %d", progress,
+                  instance=instance)
+        instance.progress = progress
+        instance.save()
 
     def _update_vm_task_state(self, instance, task_state):
         instance.task_state = task_state
