@@ -17,6 +17,7 @@ A connection to the VMware vCloud platform.
 """
 
 import os
+import copy
 import time
 import shutil
 import urllib2
@@ -416,8 +417,8 @@ class VCloudDriver(driver.ComputeDriver):
 
     def _spawn_from_image(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
-        '''
-        '''
+        """
+        """
         def _del_vapp():
             self._vcloud_client.delete_vapp(vapp_name)
 
@@ -425,14 +426,14 @@ class VCloudDriver(driver.ComputeDriver):
             self._vcloud_client.delete_volume(disk_name)
 
         def _detach_disk_to_vm():
-            for attach_disk_name in attach_disk_names:
-                self._vcloud_client.detach_disk_from_vm(attach_disk_name)
+            for attached_disk_name in attached_disk_names:
+                self._vcloud_client.detach_disk_from_vm(attached_disk_name)
 
         def _power_off():
             self._vcloud_client.power_off(vapp_name)
 
         undo_mgr = utils.UndoManager()
-        attach_disk_names = []
+        attached_disk_names = []
 
         try:
             image_cache_dir = CONF.vcloud.vcloud_conversion_dir
@@ -525,7 +526,7 @@ class VCloudDriver(driver.ComputeDriver):
                     LOG.error(msg)
                     raise exception.NovaException(msg)
 
-                attach_disk_names.append(disk_name)
+                attached_disk_names.append(disk_name)
                 undo_mgr.undo_with(_detach_disk_to_vm)
 
             # power on it
@@ -534,23 +535,21 @@ class VCloudDriver(driver.ComputeDriver):
 
             if is_hybrid_vm:
                 vapp_ip = self.get_vapp_ip(vapp_name)
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
 
-                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
                 file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
                 file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
-
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
-
-                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
-                client.create_container(image_meta.get('name', ''))
-
-                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
-                client.start_container(network_info=network_info, block_device_info=block_device_info)
 
                 bdms = block_device_info.get('block_device_mapping',[])
                 root_device_name = block_device_info.get('root_device_name', '')
+
+                new_block_device_info = copy.deepcopy(block_device_info)
+                new_block_device_info['block_device_mapping'] = []
+                new_bdms = new_block_device_info['block_device_mapping']
 
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
@@ -574,19 +573,28 @@ class VCloudDriver(driver.ComputeDriver):
                                      {'volume_name': vcloud_volume_name,
                                       'instance_name': vapp_name})
 
-                        attach_disk_names.append(vcloud_volume_name)
+                        attached_disk_names.append(vcloud_volume_name)
 
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
-                        for dev in devs:
-                            client.attach_volume(volume_id, dev, mount_device)
+
+                        new_bdm = copy.deepcopy(bdm)
+                        new_bdm['real_device'] = devs[0]
+                        new_bdms.append(new_bdm)
                     else:
                         msg = _('Unable to find volume %s to instance') % vcloud_volume_name
                         LOG.error(msg)
                         raise exception.NovaException(msg)
 
-                if injected_files:
-                    client.inject_files(injected_files)
+                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
+                client.create_container(image_meta.get('name', '')
+                                        injected_files=injected_files,
+                                        admin_password=admin_password,
+                                        network_info=network_info,
+                                        block_device_info=new_block_device_info)
+
+                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
+                client.start_container(network_info=network_info, block_device_info=new_block_device_info)
 
             # update port bind host
             self._binding_host(context, network_info, instance.uuid)
@@ -596,81 +604,93 @@ class VCloudDriver(driver.ComputeDriver):
  
     def _spawn_from_volume(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
-        bdms = block_device_info.get('block_device_mapping',[])
-        root_device_name = block_device_info.get('root_device_name', '')
+        """
+        """
 
-        root_bdm = self._get_root_bdm_from_bdms(bdms, root_device_name)
-        if not root_bdm:
-            LOG.error('spanw from volume, not found root bdm')
-            return
+        def _del_vapp():
+            self._vcloud_client.delete_vapp(vapp_name)
 
-        root_volume_id = root_bdm['connection_info']['data']['volume_id']
-        root_volume = self.cinder_api.get(context, root_volume_id)
-        volume_image_metadata = root_volume['volume_image_metadata']
+        def _detach_disk_to_vm():
+            for attached_disk_name in attached_disk_names:
+                self._vcloud_client.detach_disk_from_vm(attached_disk_name)
 
-        rabbit_host = CONF.rabbit_host
-        if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
-            rabbit_host = CONF.rabbit_hosts[0]
-        if ':' in rabbit_host:
-            rabbit_host = rabbit_host[0:rabbit_host.find(':')]
+        def _power_off():
+            self._vcloud_client.power_off(vapp_name)
 
-        if volume_image_metadata['container_format'] == constants.HYBRID_VM:
-            self._binding_host(context, network_info, instance.uuid)
+        undo_mgr = utils.UndoManager()
+        attached_disk_names = []
 
-            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-            network_configs = self._vcloud_client.get_network_configs(network_names)
+        try:
+            bdms = block_device_info.get('block_device_mapping',[])
+            root_device_name = block_device_info.get('root_device_name', '')
 
-            vapp_name = self._get_vcloud_vapp_name(instance)
-            vapp = self._vcloud_client.create_vapp(vapp_name, volume_image_metadata['image_id'], network_configs)
+            root_bdm = self._get_root_bdm_from_bdms(bdms, root_device_name)
 
-            # generate the network_connection
-            network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
-            # update network
-            self._vcloud_client.update_vms_connections(vapp, network_connections)
-            
-            # update vm specification
-            self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
-            self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
+            root_volume_id = root_bdm['connection_info']['data']['volume_id']
+            root_volume = self.cinder_api.get(context, root_volume_id)
+            volume_image_metadata = root_volume['volume_image_metadata']
 
+            rabbit_host = CONF.rabbit_host
+            if 'localhost' in rabbit_host or '127.0.0.1' in rabbit_host:
+                rabbit_host = CONF.rabbit_hosts[0]
+            if ':' in rabbit_host:
+                rabbit_host = rabbit_host[0:rabbit_host.find(':')]
 
-            root_volume_name = root_bdm['connection_info']['data']['display_name']
-            vcloud_volume_name = self._get_vcloud_volume_name(root_volume_id, root_volume_name)
-            result,disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+            if volume_image_metadata['container_format'] == constants.HYBRID_VM:
+                self._binding_host(context, network_info, instance.uuid)
 
-            if result:
-                LOG.debug("Find volume successful, disk name is: %(disk_name)s"
-                          "disk ref's href is: %(disk_href)s.",
-                          {'disk_name': vcloud_volume_name,
-                           'disk_href': disk_ref.href})
+                network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+                network_configs = self._vcloud_client.get_network_configs(network_names)
 
-                if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
-                    LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
-                             {'volume_name': vcloud_volume_name,
-                              'instance_name': vapp_name})
-            else:
-                LOG.error(_('Unable to find volume %s to instance'),vcloud_volume_name)
+                vapp_name = self._get_vcloud_vapp_name(instance)
+                vapp = self._vcloud_client.create_vapp(vapp_name, volume_image_metadata['image_id'], network_configs)
+
+                undo_mgr.undo_with(_del_vapp)
+                
+                # generate the network_connection
+                network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
+                # update network
+                self._vcloud_client.update_vms_connections(vapp, network_connections)
+                
+                # update vm specification
+                self._vcloud_client.modify_vm_cpu(vapp, instance.get_flavor().vcpus)
+                self._vcloud_client.modify_vm_memory(vapp, instance.get_flavor().memory_mb)
 
 
-            # power on it
-            self._vcloud_client.power_on_vapp(vapp_name)
+                root_volume_name = root_bdm['connection_info']['data']['display_name']
+                vcloud_volume_name = self._get_vcloud_volume_name(root_volume_id, root_volume_name)
+                result,disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
 
-            vapp_ip = self.get_vapp_ip(vapp_name)
-            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+                if result:
+                    LOG.debug("Find volume successful, disk name is: %(disk_name)s"
+                              "disk ref's href is: %(disk_href)s.",
+                              {'disk_name': vcloud_volume_name,
+                               'disk_href': disk_ref.href})
 
-            file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
-            file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+                    if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
+                        LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
+                                 {'volume_name': vcloud_volume_name,
+                                  'instance_name': vapp_name})
+                    
+                    attached_disk_names.append(vcloud_volume_name)
+                    undo_mgr.undo_with(_detach_disk_to_vm)                    
+                else:
+                    msg = _('Unable to find volume %s to instance')% vcloud_volume_name
+                    LOG.error(msg)
+                    raise exception.NovaException(msg)
 
-            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            try:
-                LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
-                client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
+                # power on it
+                self._vcloud_client.power_on_vapp(vapp_name)
+                undo_mgr.undo_with(_power_off)
 
-                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
-                #will support volumes later???
-                client.create_container(volume_image_metadata['image_name'])
+                vapp_ip = self.get_vapp_ip(vapp_name)
+                client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
 
-                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
-                client.start_container(network_info=network_info, block_device_info=block_device_info)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+
+                new_block_device_info = copy.deepcopy(block_device_info)
+                new_block_device_info['block_device_mapping'] = []
+                new_bdms = new_block_device_info['block_device_mapping']
 
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
@@ -692,24 +712,45 @@ class VCloudDriver(driver.ComputeDriver):
                             LOG.info("Volume %(volume_name)s attached to: %(instance_name)s",
                                      {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
 
+                        attached_disk_names.append(vcloud_volume_name)
+
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
-                        for dev in devs:
-                            client.attach_volume(volume_id, dev, mount_device)
+
+                        new_bdm = copy.deepcopy(bdm)
+                        new_bdm['real_device'] = devs[0]
+                        new_bdms.append(new_bdm)
                     else:
-                        LOG.error(_('Unable to find volume %s to instance'),  vcloud_volume_name)
+                        msg = _('Unable to find volume %s to instance') % vcloud_volume_name
+                        LOG.error(msg)
+                        raise exception.NovaException(msg)
 
-                if injected_files:
-                    client.inject_files(injected_files)
+                LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
+                file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
+                file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
+                client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
 
-            except (errors.NotFound, errors.APIError) as e:
-                LOG.error("instance %s spawn from volume failed, reason %s"%(vapp_name, e))
+                LOG.info("To create container %s for instance %s", image_meta.get('name', ''), vapp_name)
+                client.create_container(volume_image_metadata['image_name'],
+                                        root_volume_id=root_volume_id,
+                                        injected_files=injected_files,
+                                        admin_password=admin_password,
+                                        network_info=network_info,
+                                        block_device_info=new_block_device_info)
 
-            # update port bind host
-            self._binding_host(context, network_info, instance.uuid)
+                LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
+                client.start_container(network_info=network_info, block_device_info=new_block_device_info)
 
-        else:
-            LOG.info("boot from volume for normal vm not supported!")
+                # update port bind host
+                self._binding_host(context, network_info, instance.uuid)
+
+            else:
+                msg = _("boot from volume for normal vm not supported!")
+                LOG.error(msg)
+                raise exception.NovaException(msg)
+        except Exception as e:
+            msg = _("Failed to spawn reason %s, rolling back") % e
+            undo_mgr.rollback_and_reraise(msg=msg, instance=instance)  
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
