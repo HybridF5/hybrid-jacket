@@ -240,7 +240,7 @@ class VCloudDriver(driver.ComputeDriver):
         """Clean up anything that is necessary for the driver gracefully stop,
         including ending remote sessions. This is optional.
         """
-        pass
+        LOG.debug("cleanup_host %s", host)
 
     def get_info(self, instance):
         state = power_state.NOSTATE
@@ -306,20 +306,19 @@ class VCloudDriver(driver.ComputeDriver):
 
     def list_instances(self):
         LOG.debug("list_instances")
-        return self.instances.keys()
 
     def list_instance_uuids(self):
         """Return the UUIDS of all the instances known to the virtualization
         layer, as a list.
         """
-        raise NotImplementedError()
+        LOG.debug("list_instance_uuids")
 
     def rebuild(self, context, instance, image_meta, injected_files,
                 admin_password, bdms, detach_block_devices,
                 attach_block_devices, network_info=None,
                 recreate=False, block_device_info=None,
                 preserve_ephemeral=False):
-        raise NotImplementedError()
+        LOG.debug("rebuild")
 
     def _get_vcloud_vapp_name(self, instance):
         if CONF.vcloud.vcloud_vm_naming_rule == 'openstack_vm_id':
@@ -637,8 +636,7 @@ class VCloudDriver(driver.ComputeDriver):
         LOG.debug(_("instance is:%s") % instance)
         LOG.debug(_("network_info is %s") % network_info)
         LOG.debug(_("block_device_info is %s") % block_device_info)
-        LOG.debug(_('admin_password:%s'), admin_password)
-        LOG.debug(_('injected_files = %s'),injected_files)
+
         LOG.info('begin time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
 
         if not instance.image_ref:
@@ -652,7 +650,6 @@ class VCloudDriver(driver.ComputeDriver):
     def _update_vm_task_state(self, instance, task_state):
         instance.task_state = task_state
         instance.save()
-
 
     def _do_destroy_vm(self, context, instance, network_info, block_device_info=None,
                        destroy_disks=True, migrate_data=None):
@@ -766,7 +763,7 @@ class VCloudDriver(driver.ComputeDriver):
         """Retrieves the IP address of the dom0
         """
         # TODO(Vek): Need to pass context in for access to auth_token
-        raise NotImplementedError()
+        LOG.debug("get_host_ip_addr")
 
     def _attach_volume_iscsi(self, instance, connection_info):
         user = CONF.vcloud.image_user
@@ -1047,7 +1044,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param context: security context
         :param instance: nova.objects.instance.Instance
         """
-        pass
+        LOG.debug("post_interrupted_snapshot_cleanup")
 
     def finish_migration(self, context, migration, instance, disk_info,
                          network_info, image_meta, resize_instance,
@@ -1086,7 +1083,7 @@ class VCloudDriver(driver.ComputeDriver):
 
         :param instance: nova.objects.instance.Instance
         """
-        raise NotImplementedError()
+        LOG.debug("set_bootable")
 
     def unrescue(self, instance, network_info):
         LOG.debug("unrescue")
@@ -1171,7 +1168,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param migrate_data: implementation specific params
 
         """
-        raise NotImplementedError()
+        LOG.debug("rollback_live_migration_at_destination")
 
 
     def post_live_migration(self, context, instance, block_device_info,
@@ -1183,7 +1180,7 @@ class VCloudDriver(driver.ComputeDriver):
         :block_device_info: instance block device information
         :param migrate_data: if not None, it is a dict which has data
         """
-        pass
+        LOG.debug("post_live_migration")
 
     def post_live_migration_at_source(self, context, instance, network_info):
         """Unplug VIFs from networks at source.
@@ -1192,8 +1189,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param instance: instance object reference
         :param network_info: instance network information
         """
-        raise NotImplementedError(_("Hypervisor driver does not support "
-                                    "post_live_migration_at_source method"))
+        LOG.debug("post_live_migration_at_source")
 
     def post_live_migration_at_destination(self, context, instance,
                                            network_info,
@@ -1210,7 +1206,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param context: security context
         :param instance: nova.db.sqlalchemy.models.Instance
         """
-        raise NotImplementedError()
+        LOG.debug("check_instance_shared_storage_local")
 
     def check_instance_shared_storage_remote(self, context, data):
         """Check if instance files located on shared storage.
@@ -1218,7 +1214,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param context: security context
         :param data: result of check_instance_shared_storage_local
         """
-        raise NotImplementedError()
+        LOG.debug("check_instance_shared_storage_remote")
 
     def check_instance_shared_storage_cleanup(self, context, data):
         """Do cleanup on host after check_instance_shared_storage calls
@@ -1226,7 +1222,7 @@ class VCloudDriver(driver.ComputeDriver):
         :param context: security context
         :param data: result of check_instance_shared_storage_local
         """
-        pass
+        LOG.debug("check_instance_shared_storage_cleanup")
 
     def check_can_live_migrate_destination(self, context, instance,
                                            src_compute_info, dst_compute_info,
@@ -1265,24 +1261,24 @@ class VCloudDriver(driver.ComputeDriver):
     def reset_network(self, instance):
         """reset networking for specified instance."""
         # TODO(Vek): Need to pass context in for access to auth_token
-        pass
+        LOG.debug("reset_network")
 
     def ensure_filtering_rules_for_instance(self, instance, network_info):
         LOG.debug("ensure_filtering_rules_for_instance")
 
     def filter_defer_apply_on(self):
         """Defer application of IPTables rules."""
-        pass
+        LOG.debug("filter_defer_apply_on")
 
     def filter_defer_apply_off(self):
         """Turn off deferral of IPTables rules and apply the rules now."""
-        pass
+        LOG.debug("filter_defer_apply_off")
 
     def unfilter_instance(self, instance, network_info):
         LOG.debug("unfilter_instance")
 
     def set_admin_password(self, instance, new_pass):
-        LOG.debug("set_admin_password")
+        LOG.debug("set instance %s admin password %s", instance, new_pass)
 
     def inject_file(self, instance, b64_path, b64_contents):
         LOG.debug("inject_file")
@@ -1293,7 +1289,7 @@ class VCloudDriver(driver.ComputeDriver):
     def inject_network_info(self, instance, nw_info):
         """inject network info for specified instance."""
         # TODO(Vek): Need to pass context in for access to auth_token
-        pass
+        LOG.debug("inject_network_info")
 
     def poll_rebooting_instances(self, timeout, instances):
         LOG.debug("poll_rebooting_instances")
@@ -1317,7 +1313,7 @@ class VCloudDriver(driver.ComputeDriver):
     def get_host_uptime(self, host):
         """Returns the result of calling "uptime" on the target host."""
         # TODO(Vek): Need to pass context in for access to auth_token
-        raise NotImplementedError()
+        LOG.debug("get_host_uptime")
 
     def plug_vifs(self, instance, network_info):
         LOG.debug("plug_vifs")
@@ -1350,7 +1346,7 @@ class VCloudDriver(driver.ComputeDriver):
         return None
 
     def dhcp_options_for_instance(self, instance):
-        pass
+        LOG.debug("dhcp_options_for_instance")
 
     def manage_image_cache(self, context, all_instances):
         """Manage the driver's local image cache.
@@ -1362,21 +1358,21 @@ class VCloudDriver(driver.ComputeDriver):
 
         :param instances: nova.objects.instance.InstanceList
         """
-        pass
+        LOG.debug("manage_image_cache")
 
     def add_to_aggregate(self, context, aggregate, host, **kwargs):
         """Add a compute host to an aggregate."""
         # NOTE(jogo) Currently only used for XenAPI-Pool
-        raise NotImplementedError()
+        LOG.debug("add_to_aggregate")
 
     def remove_from_aggregate(self, context, aggregate, host, **kwargs):
         """Remove a compute host from an aggregate."""
-        raise NotImplementedError()
+        LOG.debug("remove_from_aggregate")
 
     def undo_aggregate_operation(self, context, op, aggregate,
                                   host, set_error=True):
         """Undo for Resource Pools."""
-        raise NotImplementedError()
+        LOG.debug("undo_aggregate_operation")
 
     def get_volume_connector(self, instance):
         LOG.debug("get_volume_connector")
@@ -1460,12 +1456,12 @@ class VCloudDriver(driver.ComputeDriver):
 
     def default_root_device_name(self, instance, image_meta, root_bdm):
         """Provide a default root device name for the driver."""
-        raise NotImplementedError()
+        LOG.debug("default_root_device_name")
 
     def default_device_names_for_instance(self, instance, root_device_name,
                                           *block_device_lists):
         """Default the missing device names in the block device mapping."""
-        raise NotImplementedError()
+        LOG.debug("default_device_names_for_instance")
 
     def is_supported_fs_format(self, fs_type):
         """Check whether the file format is supported by this driver
