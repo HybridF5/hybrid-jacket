@@ -24,8 +24,6 @@ import urllib2
 import sshclient
 import subprocess
 from oslo.config import cfg
-from oslo.utils import excutils
-
 
 from nova import utils
 from nova import image
@@ -36,6 +34,7 @@ from nova.network import neutronv2
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.context import RequestContext
+from nova.openstack.common import excutils
 from nova.openstack.common import fileutils
 from nova.openstack.common import jsonutils
 from nova.volume.cinder import API as cinder_api

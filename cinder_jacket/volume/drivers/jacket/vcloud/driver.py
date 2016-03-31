@@ -5,7 +5,6 @@ import urllib2
 import traceback
 import subprocess
 from oslo.config import cfg
-from oslo.utils import excutils
 
 from cinder import utils
 from cinder.i18n import _
@@ -13,6 +12,7 @@ from cinder import exception
 import cinder.compute.nova as nova
 from cinder.image import image_utils
 from cinder.backup.driver import BackupDriver
+from cinder.openstack.common import excutils
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import log as logging
 
@@ -307,8 +307,22 @@ class VCloudVolumeDriver(driver.VolumeDriver):
 
         self._vcloud_client.delete_volume(vcloud_volume_name)
 
-    def create_volume_from_snapshot(self, volume, snapshot):
-        """Create a volume from a snapshot."""
+
+    def _copy_volume_to_volume(self, dest_volume_name, 
+                                        dest_volume_size,
+                                        dest_volume_id,
+                                        source_volume_name, 
+                                        source_volume_size,
+                                        source_volume_id,
+                                        created = False, 
+                                        source_attached = False,
+                                        dest_attached = False):
+        """
+        """
+
+        def _attach_disks_to_vm():
+            for detached_disk in detached_disks:
+                self._vcloud_client.attach_disk_to_vm(detached_disk['vapp_name'], detached_disk['disk_ref'])
 
         def _delete_volumes():
             for created_volume in created_volumes:
@@ -324,204 +338,87 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                     self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
 
         def _power_off_vapp():
-            self._vcloud_client.power_off(clone_vapp_name)
-
-        LOG.debug('create volume from snapshot volume: %s snapshot: %s', vars(volume), vars(snapshot))
-
-        undo_mgr = util.UndoManager()
-        created_volumes = []
-        attached_disk_names = []
-
-        try:
-            volume_name = volume['display_name']
-            vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
-            self._vcloud_client.create_volume(vcloud_volume_name, volume['size'])
-            result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-            created_volumes.append(vcloud_volume_name)
-            undo_mgr.undo_with(_delete_volumes)
-            LOG.debug("Create volume %s in vcloud successful" % vcloud_volume_name)
-
-            snapshot_name = snapshot['display_name']
-            vcloud_snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
-            result, snapshot_disk_ref = self._vcloud_client.get_disk_ref(vcloud_snapshot_volume_name)
-            if not result:
-                msg = _('the volume %s for snapshot in vcloud cannot found', vcloud_snapshot_volume_name)
-                LOG.error(msg)
-                raise exception.CinderException(msg)
-
-            #NOTE(nkapotoxin): create vapp with vapptemplate
-            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-            network_configs = self._vcloud_client.get_network_configs(network_names)
-
-            # create vapp
-            clone_vapp_name = 'server@%s' % vcloud_volume_name
-            clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
-            undo_mgr.undo_with(_delete_vapp)
-            LOG.debug("Create clone vapp %s successful" % clone_vapp_name)
-
-            # generate the network_connection
-            network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
-
-            # update network
-            self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
-            
-            # update vm specification
-            #self._vcloud_client.modify_vm_cpu(clone_vapp, instance.get_flavor().vcpus)
-            #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
-            LOG.debug("Config vapp %s successful" % clone_vapp_name)
-
-            if clone_vapp_name.startswith('server@'):
-                local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
-            else:
-                local_disk_name = 'Local@%s' % clone_vapp_name
-
-            self._vcloud_client.create_volume(local_disk_name, 1)
-            created_volumes.append(local_disk_name)
-            LOG.debug("Create Local disk %s for vapp %s successful", local_disk_name, clone_vapp_name)
-
-            result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
-            self._vcloud_client.attach_disk_to_vm(clone_vapp_name, local_disk_ref)
-            attached_disk_names.append(local_disk_name)
-            undo_mgr.undo_with(_detach_disks_to_vm)
-            LOG.debug("attach local disk %s to vapp %s successful", local_disk_name, clone_vapp_name)
-
-            # power on it
-            self._vcloud_client.power_on_vapp(clone_vapp_name)
-            undo_mgr.undo_with(_power_off_vapp)
-
-            vapp_ip = self.get_vapp_ip(clone_vapp_name)
-            client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
-            self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-            LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
-
-            odevs = set(client.list_volume()['devices'])
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, snapshot_disk_ref):
-                attached_disk_names.append(vcloud_snapshot_volume_name)
-                LOG.debug("Volume %(volume_name)s attached to: %(instance_name)s",
-                        {'volume_name': vcloud_snapshot_volume_name, 'instance_name': clone_vapp_name})
-
-            ndevs = set(client.list_volume()['devices'])
-            devs = ndevs - odevs
-            for dev in devs:
-                client.attach_volume(snapshot['id'], dev, constants.DEV1)
-
-            odevs = set(client.list_volume()['devices'])
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
-                attached_disk_names.append(vcloud_volume_name)
-                LOG.debug("Volume %(volume_name)s attached to: %(instance_name)s",
-                        {'volume_name': vcloud_volume_name, 'instance_name': clone_vapp_name})
-            ndevs = set(client.list_volume()['devices'])
-            devs = ndevs - odevs
-            for dev in devs:
-                client.attach_volume(volume['id'], dev, constants.DEV2)
-
-            src_vref = {}
-            src_vref['id'] = snapshot['id']
-            src_vref['size'] = snapshot['volume_size']
-
-            LOG.debug('begin time of clone vloume(size %s GB) is %s', snapshot['volume_size'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-            task = client.clone_volume(volume, src_vref)
-            task_state = client.query_task(task)
-            while task_state == client_constants.TASK_DOING:
-                time.sleep(30)
-                task_state = client.query_task(task)
-
-            if task_state != client_constants.TASK_SUCCESS:
-                msg = "create volume from snaptshot clone failed"
-                LOG.error(msg)
-                raise exception.CinderException(msg)
-            else:                
-                LOG.debug('end time of clone vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-
-            attached_disk_names.remove(vcloud_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-
-            attached_disk_names.remove(local_disk_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, local_disk_ref)
-
-            attached_disk_names.remove(vcloud_snapshot_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, snapshot_disk_ref)            
-
-            undo_mgr.cancel_undo(_power_off_vapp)
             self._vcloud_client.power_off_vapp(clone_vapp_name)
 
-            undo_mgr.cancel_undo(_delete_vapp)
-            self._vcloud_client.delete_vapp(clone_vapp_name)
+        LOG.debug('copy volume to volume: dest: %s ID %s %s GB source: %s id: %s %s GB',
+                    dest_volume_name, dest_volume_id, dest_volume_size,
+                    source_volume_name, source_volume_id, source_volume_size)
 
-            created_volumes.remove(local_disk_name)
-            self._vcloud_client.delete_volume(local_disk_name)
-        except Exception as e:
-            msg = _("Failed to create volume from snapshot reason %s, rolling back") % e
-            LOG.error(msg)
-            undo_mgr.rollback_and_reraise(msg=msg)
-
-    def create_cloned_volume(self, volume, src_vref):
-        """Create a clone of the specified volume."""
-
-        def _attach_disk_to_vm():
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-        def _delete_volumes():
-            for created_volume in created_volumes:
-                self._vcloud_client.delete_volume(created_volume)
-
-        def _delete_vapp():
-            self._vcloud_client.delete_vapp(clone_vapp_name)
-
-        def _detach_disks_to_vm():
-            for attached_disk_name in attached_disk_names:
-                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
-                if result:
-                    self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-
-        def _power_off_vapp():
-            self._vcloud_client.power_off(clone_vapp_name)
-
-        LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
-
-        undo_mgr = util.UndoManager()
+        detached_disks = []
         created_volumes = []
-        attached_disk_names = []
+        attached_disk_names =[]
+        undo_mgr = util.UndoManager()
 
         try:
-            volume_name = src_vref['display_name']
-            vcloud_volume_name = self._get_vcloud_volume_name(src_vref['id'], volume_name)
-            result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-            if not result:
-                msg = _('the volume %s for clone in vcloud cannot found', vcloud_volume_name)
+
+            if not created and dest_attached:
+                msg = _('only created destination volume can be attached')
                 LOG.error(msg)
                 raise exception.CinderException(msg)
 
+            result, source_disk_ref = self._vcloud_client.get_disk_ref(source_volume_name)
+            if not result:
+                msg = _('source volume %s cannot found') % source_volume_name
+                LOG.error(msg)
+                raise exception.CinderException(msg)
 
-            if src_vref['volume_attachment']:
-                vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
-                vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
-                if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
+            if source_attached:
+                source_vapp_name = self._vcloud_client.get_disk_attached_vapp(source_volume_name)
+                source_vapp = self._vcloud_client._get_vcloud_vapp(source_vapp_name)
+                if self._vcloud_client._get_status_first_vm(source_vapp) != constants.VM_POWER_OFF_STATUS:
                     msg = "when source volume is attached, the vm must be in power off state"
                     LOG.info(msg)
                     raise exception.CinderException(msg)
 
-                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-                undo_mgr.undo_with(_attach_disk_to_vm)                
-                LOG.debug("source volume %s has been detached from vapp %s", vcloud_volume_name, vapp_name)
+                self._vcloud_client.detach_disk_from_vm(source_vapp_name, source_disk_ref)
+                            
+                detached_disk = {}
+                detached_disk['vapp_name'] = source_vapp_name
+                detached_disk['disk_ref'] = source_disk_ref
+                detached_disks.append(detached_disk)
+                undo_mgr.undo_with(_attach_disks_to_vm)
+                LOG.debug("source volume %s has been detached from vapp %s", source_volume_name, source_vapp_name)
 
-            cloned_volume_name = volume['display_name']
-            vcloud_cloned_volume_name = self._get_vcloud_volume_name(volume['id'], cloned_volume_name)
+            if not created:
+                self._vcloud_client.create_volume(dest_volume_name, dest_volume_size)
+                result, dest_disk_ref = self._vcloud_client.get_disk_ref(dest_volume_name)
 
-            self._vcloud_client.create_volume(vcloud_cloned_volume_name, volume['size'])
-            result, cloned_disk_ref = self._vcloud_client.get_disk_ref(vcloud_cloned_volume_name)
+                created_volumes.append(dest_volume_name)
+                undo_mgr.undo_with(_delete_volumes)
+                LOG.debug("dst volume %s(%s GB) has been created", dest_volume_name, dest_volume_size)
 
-            created_volumes.append(vcloud_cloned_volume_name)
-            undo_mgr.undo_with(_delete_volumes)
-            LOG.debug('volume %s(size %s GB) has been created', vcloud_cloned_volume_name, volume['size'])
+            result, dest_disk_ref = self._vcloud_client.get_disk_ref(dest_volume_name)
+            if not result:
+                msg = _('dest volume %s cannot found') % dest_volume_name
+                LOG.error(msg)
+                raise exception.CinderException(msg)                
+
+            if dest_attached:
+                dest_vapp_name = self._vcloud_client.get_disk_attached_vapp(dest_volume_name)
+                dest_vapp = self._vcloud_client._get_vcloud_vapp(dest_vapp_name)
+                if self._vcloud_client._get_status_first_vm(dest_vapp) != constants.VM_POWER_OFF_STATUS:
+                    msg = "when dest volume is attached, the vm must be in power off state"
+                    LOG.info(msg)
+                    raise exception.CinderException(msg)
+
+                self._vcloud_client.detach_disk_from_vm(dest_vapp_name, dest_disk_ref)
+
+                detached_disk = {}
+                detached_disk['vapp_name'] = dest_vapp_name
+                detached_disk['disk_ref'] = dest_disk_ref
+                detached_disks.append(detached_disk)
+                if undo_mgr.count_func(_attach_disks_to_vm) == 0:
+                    undo_mgr.undo_with(_attach_disks_to_vm)
+                LOG.debug("dst volume %s has been detached from vapp %s", dest_volume_name, dest_vapp_name)
 
             #NOTE(nkapotoxin): create vapp with vapptemplate
             network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
             network_configs = self._vcloud_client.get_network_configs(network_names)
 
             # create vapp
-            clone_vapp_name = 'server@%s' % vcloud_cloned_volume_name
+            clone_vapp_name = 'server@%s' % dest_volume_name
             clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
+
             undo_mgr.undo_with(_delete_vapp)
             LOG.debug("Create clone vapp %s successful" % clone_vapp_name)
 
@@ -536,178 +433,12 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
             LOG.debug("Config vapp %s successful" % clone_vapp_name)
 
-            if clone_vapp_name.startswith('server@'):
-                local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
-            else:
-                local_disk_name = 'Local@%s' % clone_vapp_name
+            local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
 
             self._vcloud_client.create_volume(local_disk_name, 1)
             created_volumes.append(local_disk_name)
-            LOG.debug("Create Local disk %s for vapp %s successful", local_disk_name, clone_vapp_name)
-
-            result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
-            self._vcloud_client.attach_disk_to_vm(clone_vapp_name, local_disk_ref)
-            attached_disk_names.append(local_disk_name)
-            undo_mgr.undo_with(_detach_disks_to_vm)
-            LOG.debug("attach local disk %s to vapp %s successful", local_disk_name, clone_vapp_name)
-
-            # power on it
-            self._vcloud_client.power_on_vapp(clone_vapp_name)
-            undo_mgr.undo_with(_power_off_vapp)
-
-            vapp_ip = self.get_vapp_ip(clone_vapp_name)
-            client = Client(vapp_ip, port=CONF.vcloud.hybrid_service_port)
-            self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-            LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
-
-            odevs = set(client.list_volume()['devices'])
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
-                attached_disk_names.append(vcloud_volume_name)
-                LOG.debug("Volume %s attached to: %s",vcloud_volume_name, clone_vapp_name)
-
-            ndevs = set(client.list_volume()['devices'])
-            devs = ndevs - odevs
-            for dev in devs:
-                client.attach_volume(src_vref['id'], dev, constants.DEV1)
-
-            odevs = set(client.list_volume()['devices'])
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, cloned_disk_ref):
-                attached_disk_names.append(vcloud_cloned_volume_name)
-                LOG.info("Volume %s attached to: %s", vcloud_cloned_volume_name, clone_vapp_name)
-
-            ndevs = set(client.list_volume()['devices'])
-            devs = ndevs - odevs
-            for dev in devs:
-                client.attach_volume(volume['id'], dev, constants.DEV2)
-
-            LOG.debug('begin time of clone vloume(size %s GB) is %s', src_vref['size'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-            task = client.clone_volume(volume, src_vref)
-            task_state = client.query_task(task)
-            while task_state == client_constants.TASK_DOING:
-                time.sleep(30)
-                task_state = client.query_task(task)
-
-            if task_state != client_constants.TASK_SUCCESS:
-                msg = "create clone volume clone failed"
-                LOG.error(msg)
-                raise exception.CinderException(msg)
-            else:
-                LOG.debug('end time of clone vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-
-            attached_disk_names.remove(vcloud_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-            if src_vref['volume_attachment']:
-                undo_mgr.cancel_undo(_attach_disk_to_vm) 
-                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-            attached_disk_names.remove(local_disk_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, local_disk_ref)
-
-            attached_disk_names.remove(vcloud_cloned_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, cloned_disk_ref)
-
-            undo_mgr.cancel_undo(_power_off_vapp)
-            self._vcloud_client.power_off_vapp(clone_vapp_name)
-
-            undo_mgr.cancel_undo(_delete_vapp)
-            self._vcloud_client.delete_vapp(clone_vapp_name)
-
-            created_volumes.remove(local_disk_name)
-            self._vcloud_client.delete_volume(local_disk_name)
-        except Exception as e:
-            msg = _("Failed to create cloned volume reason %s, rolling back") % e
-            LOG.error(msg)
-            undo_mgr.rollback_and_reraise(msg=msg)
-
-    def extend_volume(self, volume, new_size):
-        """Extend a volume."""
-        pass
-
-    def create_snapshot(self, snapshot):
-        """Create a snapshot."""
-
-        def _attach_disk_to_vm():
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-        def _delete_volumes():
-            for created_volume in created_volumes:
-                self._vcloud_client.delete_volume(created_volume)
-
-        def _delete_vapp():
-            self._vcloud_client.delete_vapp(clone_vapp_name)
-
-        def _detach_disks_to_vm():
-            for attached_disk_name in attached_disk_names:
-                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
-                if result:
-                    self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-
-        def _power_off_vapp():
-            self._vcloud_client.power_off(clone_vapp_name)
-
-        LOG.debug('create snapshot: %s', vars(snapshot))
-
-        undo_mgr = util.UndoManager()
-        created_volumes = []
-        attached_disk_names = []
-
-        try:
-            volume_name = snapshot['volume']['display_name']
-            vcloud_volume_name = self._get_vcloud_volume_name(snapshot['volume_id'], volume_name)
-            result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-            if not result:
-                msg = "cannot find volume %s in vcloud" % vcloud_volume_name
-                LOG.error(msg)
-                raise exception.CinderException(msg)            
-
-            if snapshot['volume']['attach_status'] == 'attached':
-                vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
-                vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
-                if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
-                    msg = "when volume is attached, the vm must be in power off state"
-                    LOG.info(msg)
-                    raise exception.CinderException(msg)
-
-                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-                undo_mgr.undo_with(_attach_disk_to_vm)
-                LOG.debug("source volume %s has been detach from vapp %s", vcloud_volume_name, vapp_name)
-
-            snapshot_name = snapshot['display_name']
-            vcloud_snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
-            self._vcloud_client.create_volume(vcloud_snapshot_volume_name, snapshot['volume_size'])
-            result, snapshot_disk_ref = self._vcloud_client.get_disk_ref(vcloud_snapshot_volume_name)
-            created_volumes.append(vcloud_snapshot_volume_name)
-            undo_mgr.undo_with(_delete_volumes)
-            LOG.debug('snapshot volume %s(size %s Gb) has been created',  vcloud_snapshot_volume_name, snapshot['volume_size'])
-
-            #NOTE(nkapotoxin): create vapp with vapptemplate
-            network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-            network_configs = self._vcloud_client.get_network_configs(network_names)
-
-            # create vapp
-            clone_vapp_name = 'server@%s' % vcloud_snapshot_volume_name
-            clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
-            undo_mgr.undo_with(_delete_vapp) 
-            LOG.debug("Clone vapp %s created successful", clone_vapp_name)        
-
-            # generate the network_connection
-            network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
-
-            # update network
-            self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
-            # update vm specification
-            #self._vcloud_client.modify_vm_cpu(clone_vapp, instance.get_flavor().vcpus)
-            #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
-            LOG.debug("Config vapp %s successful" % clone_vapp_name)
-
-
-            if clone_vapp_name.startswith('server@'):
-                local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
-            else:
-                local_disk_name = 'Local@%s' % clone_vapp_name
-
-            self._vcloud_client.create_volume(local_disk_name, 1)
-            created_volumes.append(local_disk_name)
+            if undo_mgr.count_func(_delete_volumes) == 0:
+                undo_mgr.undo_with(_delete_volumes)
             LOG.debug("Create Local disk %s for vapp %s successful", local_disk_name, clone_vapp_name)
 
             result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
@@ -726,60 +457,70 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
 
             odevs = set(client.list_volume()['devices'])
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
-                attached_disk_names.append(vcloud_volume_name)
-                LOG.debug("Volume %s attached to: %s", vcloud_volume_name, clone_vapp_name)
+            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, source_disk_ref):
+                attached_disk_names.append(source_volume_name)
+                LOG.debug("Volume %s attached to: %s",source_volume_name, clone_vapp_name)
 
             ndevs = set(client.list_volume()['devices'])
             devs = ndevs - odevs
             for dev in devs:
-                client.attach_volume(snapshot['volume_id'], dev, constants.DEV1)
+                client.attach_volume(source_volume_id, dev, constants.DEV1)
 
-            odevs = set(client.list_volume()['devices'])            
-            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, snapshot_disk_ref):
-                attached_disk_names.append(vcloud_snapshot_volume_name)
-                LOG.debug("Volume %s attached to: %s", vcloud_snapshot_volume_name, clone_vapp_name)
+            odevs = set(client.list_volume()['devices'])
+            if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, dest_disk_ref):
+                attached_disk_names.append(dest_volume_name)
+                LOG.debug("Volume %s attached to: %s", dest_volume_name, clone_vapp_name)
 
             ndevs = set(client.list_volume()['devices'])
             devs = ndevs - odevs
             for dev in devs:
-                client.attach_volume(snapshot['id'], dev, constants.DEV2)
+                client.attach_volume(dest_volume_id, dev, constants.DEV2)
 
-            volume = {}
-            volume['id'] = snapshot['id']
-            volume['size'] = snapshot['volume_size']
-            src_vref = {}
-            src_vref['id'] = snapshot['volume_id']
-            src_vref['size'] = snapshot['volume_size']
+            LOG.debug('begin time of copy vloume(size %s GB) is %s', source_volume_size, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
-            LOG.debug('begin time of clone vloume(size %s GB) is %s', snapshot['volume_size'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-            task = client.clone_volume(volume, src_vref)
+            dest_volume = {}
+            dest_volume['id'] = dest_volume_id
+            dest_volume['size'] = dest_volume_size
+            src_volume = {}
+            src_volume['id'] = source_volume_id
+            src_volume['size'] = source_volume_size
+
+            task = client.clone_volume(dest_volume, src_volume)
             task_state = client.query_task(task)
-            while client.query_task(task) == client_constants.TASK_DOING:
+            while task_state == client_constants.TASK_DOING:
                 time.sleep(30)
                 task_state = client.query_task(task)
 
             if task_state != client_constants.TASK_SUCCESS:
-                msg = "create snapshot clone failed"
+                msg = "copy volume failed"
                 LOG.error(msg)
                 raise exception.CinderException(msg)
             else:
-                LOG.debug('end time of clone vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                LOG.debug('end time of copy vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
-            attached_disk_names.remove(vcloud_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-            if snapshot['volume']['attach_status'] == 'attached':
-                undo_mgr.cancel_undo(_attach_disk_to_vm)
-                self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+            undo_mgr.cancel_undo(_power_off_vapp)
+            self._vcloud_client.power_off_vapp(clone_vapp_name)
 
-            attached_disk_names.remove(vcloud_snapshot_volume_name)
-            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, snapshot_disk_ref)
+            attached_disk_names.remove(source_volume_name)
+            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, source_disk_ref)
+            if source_attached:
+                detached_disk = {}
+                detached_disk['vapp_name'] = source_vapp_name
+                detached_disk['disk_ref'] = source_disk_ref
+                detached_disks.remove(detached_disk)
+                self._vcloud_client.attach_disk_to_vm(source_vapp_name, source_disk_ref)
 
             attached_disk_names.remove(local_disk_name)
             self._vcloud_client.detach_disk_from_vm(clone_vapp_name, local_disk_ref)
 
-            undo_mgr.cancel_undo(_power_off_vapp)
-            self._vcloud_client.power_off_vapp(clone_vapp_name)
+            attached_disk_names.remove(dest_volume_name)
+            self._vcloud_client.detach_disk_from_vm(clone_vapp_name, dest_disk_ref)
+            if dest_attached:
+                detached_disk = {}
+                detached_disk['vapp_name'] = dest_vapp_name
+                detached_disk['disk_ref'] = dest_disk_ref
+                detached_disks.remove(detached_disk)
+                self._vcloud_client.attach_disk_to_vm(dest_vapp_name, dest_disk_ref)
 
             undo_mgr.cancel_undo(_delete_vapp)
             self._vcloud_client.delete_vapp(clone_vapp_name)
@@ -787,9 +528,82 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             created_volumes.remove(local_disk_name)
             self._vcloud_client.delete_volume(local_disk_name)
         except Exception as e:
-            msg = _("Failed to create snapshot reason %s, rolling back") % e
+            msg = _("Failed to copy volume to volume reason %s, rolling back") % e
             LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg)
+
+    def create_volume_from_snapshot(self, volume, snapshot):
+        """Create a volume from a snapshot."""
+
+        LOG.debug('create volume from snapshot volume: %s snapshot: %s', vars(volume), vars(snapshot))
+
+        volume_name = volume['display_name']
+        vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
+
+        snapshot_name = snapshot['display_name']
+        vcloud_snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
+
+        self._copy_volume_to_volume(vcloud_volume_name,
+                                volume['size'],
+                                volume['id'],
+                                vcloud_snapshot_volume_name,
+                                snapshot['volume_size'],
+                                snapshot['id'])
+
+        LOG.debug('create volume from snapshot successful')
+
+    def create_cloned_volume(self, volume, src_vref):
+        """Create a clone of the specified volume."""
+
+        LOG.debug('create cloned volume:%s src_vref %s', vars(volume), vars(src_vref))
+
+        source_volume_name = src_vref['display_name']
+        vcloud_source_volume_name = self._get_vcloud_volume_name(src_vref['id'], source_volume_name)
+        dest_volume_name = volume['display_name']
+        vcloud_dest_volume_name = self._get_vcloud_volume_name(volume['id'], dest_volume_name)
+
+        if src_vref['volume_attachment']:
+            source_attached = True
+        else:
+            source_attached = False
+
+        self._copy_volume_to_volume(vcloud_dest_volume_name,
+                                volume['size'],
+                                volume['id'],
+                                vcloud_source_volume_name,
+                                src_vref['size'],
+                                src_vref['id'],
+                                source_attached = source_attached)
+
+    def extend_volume(self, volume, new_size):
+        """Extend a volume."""
+        pass
+
+    def create_snapshot(self, snapshot):
+        """Create a snapshot."""
+
+        LOG.debug('create snapshot: %s', vars(snapshot))
+
+        source_volume_name = snapshot['volume']['display_name']
+        vcloud_source_volume_name = self._get_vcloud_volume_name(snapshot['volume_id'], source_volume_name)         
+
+        if snapshot['volume']['attach_status'] == 'attached':
+            source_attached= True
+        else:
+            source_attached = False
+
+        snapshot_name = snapshot['display_name']
+        vcloud_dest_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
+
+        self._copy_volume_to_volume(vcloud_dest_volume_name,
+                                    snapshot['volume_size'],
+                                    snapshot['id'],
+                                    vcloud_source_volume_name,
+                                    snapshot['volume_size'],
+                                    snapshot['volume_id'],
+                                    source_attached = source_attached)
+
+        LOG.debug('create snapshot successful')
 
     def delete_snapshot(self, snapshot):
         """Delete a snapshot."""
@@ -1095,344 +909,56 @@ class VCloudVolumeDriver(driver.VolumeDriver):
 
     def backup_volume(self, context, backup, backup_service):
         """Create a new backup from an existing volume."""
-        LOG.debug("backup volume: backup:%s backup_service:%s", 
-                   vars(backup), vars(backup_service))
+        LOG.debug("backup volume: backup:%s backup_service:%s", vars(backup), vars(backup_service))
 
-        def _attach_disk_to_vm():
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
+        if backup_service.DRIVER_NAME == 'VCloudBackupDriver':            
+            volume = self.db.volume_get(context, backup['volume_id'])
+            vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['display_name'])
 
-        def _delete_volumes():
-            for created_volume in created_volumes:
-                self._vcloud_client.delete_volume(created_volume)
+            if volume['volume_attachment']:
+                source_attached = True
+            else:
+                source_attached = False
 
-        def _delete_vapp():
-            self._vcloud_client.delete_vapp(clone_vapp_name)
+            backup_name = backup['display_name']
+            vcloud_backup_volume_name = self._get_vcloud_volume_name(backup['id'], backup_name)
 
-        def _detach_disks_to_vm():
-            for attached_disk_name in attached_disk_names:
-                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
-                if result:
-                    self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
+            self._copy_volume_to_volume(vcloud_backup_volume_name, 
+                                        backup['size'],
+                                        backup['id'],
+                                        vcloud_volume_name, 
+                                        volume['size'],
+                                        volume['id'],
+                                        source_attached = source_attached)
 
-        def _power_off_vapp():
-            self._vcloud_client.power_off(clone_vapp_name)
-
-        if backup_service.DRIVER_NAME == 'VCloudBackupDriver':
-            undo_mgr = util.UndoManager()
-            created_volumes = []
-            attached_disk_names = []
-            
-            try:
-                volume = self.db.volume_get(context, backup['volume_id'])
-                vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['display_name'])
-                result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-                if not result:
-                    msg = "cannot find volume %s in vcloud" % vcloud_volume_name
-                    LOG.error(msg)
-                    raise exception.CinderException(msg)
-
-                if volume['volume_attachment']:
-                    vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
-                    vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
-                    if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
-                        msg = "when volume is attached, the vm must be in power off state"
-                        LOG.info(msg)
-                        raise exception.CinderException(msg)
-
-                    self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-                    undo_mgr.undo_with(_attach_disk_to_vm)                
-                    LOG.debug("source volume %s has been detached from vapp %s", vcloud_volume_name, vapp_name)
-
-
-                backup_name = backup['display_name']
-                vcloud_backup_volume_name = self._get_vcloud_volume_name(backup['id'], backup_name)
-
-                self._vcloud_client.create_volume(vcloud_backup_volume_name, backup['size'])
-                result, backup_disk_ref = self._vcloud_client.get_disk_ref(vcloud_backup_volume_name)
-                created_volumes.append(vcloud_cloned_volume_name)
-                undo_mgr.undo_with(_delete_volumes)
-                LOG.debug('volume %s(size %s GB) has been created', vcloud_backup_volume_name, backup['size'])
-
-                #NOTE(nkapotoxin): create vapp with vapptemplate
-                network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-                network_configs = self._vcloud_client.get_network_configs(network_names)
-
-                # create vapp
-                clone_vapp_name = 'server@%s' % vcloud_backup_volume_name
-                clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
-                undo_mgr.undo_with(_delete_vapp)
-                LOG.debug("Create clone vapp %s successful" % clone_vapp_name)
-
-                # generate the network_connection
-                network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
-
-                # update network
-                self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
-
-                # update vm specification
-                #self._vcloud_client.modify_vm_cpu(clone_vapp, instance.get_flavor().vcpus)
-                #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
-                LOG.debug("Config vapp %s successful" % clone_vapp_name)
-
-                if clone_vapp_name.startswith('server@'):
-                    local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
-                else:
-                    local_disk_name = 'Local@%s' % clone_vapp_name
-
-                self._vcloud_client.create_volume(local_disk_name, 1)
-                created_volumes.append(local_disk_name)
-                LOG.debug("Create Local disk %s for vapp %s successful", local_disk_name, clone_vapp_name)
-
-                result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
-                self._vcloud_client.attach_disk_to_vm(clone_vapp_name, local_disk_ref)
-                attached_disk_names.append(local_disk_name)
-                undo_mgr.undo_with(_detach_disks_to_vm)
-                LOG.debug("attach local disk %s to vapp %s successful", local_disk_name, clone_vapp_name)
-
-                # power on it
-                self._vcloud_client.power_on_vapp(clone_vapp_name)
-                undo_mgr.undo_with(_power_off_vapp)
-
-                vapp_ip = self.get_vapp_ip(clone_vapp_name)
-                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
-                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-                LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
-                
-                odevs = set(client.list_volume()['devices'])
-                if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
-                    attached_disk_names.append(vcloud_volume_name)
-                    LOG.debug("Volume %s attached to: %s", vcloud_volume_name,  clone_vapp_name)
-
-                ndevs = set(client.list_volume()['devices'])
-                devs = ndevs - odevs
-                for dev in devs:
-                    client.attach_volume(volume['id'], dev, constants.DEV1)
-
-                odevs = set(client.list_volume()['devices'])
-                if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, backup_disk_ref):
-                    attached_disk_names.append(vcloud_backup_volume_name)
-                    LOG.debug("Volume %s attached to: %s", vcloud_backup_volume_name, clone_vapp_name)
-                ndevs = set(client.list_volume()['devices'])
-                devs = ndevs - odevs
-                for dev in devs:
-                    client.attach_volume(backup['id'], dev, constants.DEV2)
-
-                dest_vref = {}
-                dest_vref['id'] = backup['id']
-                dest_vref['size'] = backup['size']
-
-                LOG.debug('begin time of clone vloume(size %s GB) is %s', backup['size'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-                task = client.clone_volume(dest_vref, volume)
-                task_state = client.query_task(task)
-                while client.query_task(task) == client_constants.TASK_DOING:
-                    time.sleep(30)
-                    task_state = client.query_task(task)
-
-                if task_state != client_constants.TASK_SUCCESS:
-                    msg = "create back volume clone failed"
-                    LOG.error(msg)
-                    raise exception.CinderException(msg)
-                else:
-                    LOG.debug('end time of clone vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-
-                attached_disk_names.remove(vcloud_volume_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-                if volume['volume_attachment']:
-                    undo_mgr.cancel_undo(_attach_disk_to_vm) 
-                    self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-                attached_disk_names.remove(local_disk_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, local_disk_ref)
-
-                attached_disk_names.remove(vcloud_backup_volume_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, backup_disk_ref)
-
-                undo_mgr.cancel_undo(_power_off_vapp)
-                self._vcloud_client.power_off_vapp(clone_vapp_name)
-
-                undo_mgr.cancel_undo(_delete_vapp)
-                self._vcloud_client.delete_vapp(clone_vapp_name)
-
-                created_volumes.remove(local_disk_name)
-                self._vcloud_client.delete_volume(local_disk_name)
-            except Exception as e:
-                msg = _("Failed to backup volume reason %s, rolling back") % e
-                LOG.error(msg)
-                undo_mgr.rollback_and_reraise(msg=msg)
+            LOG.debug("backup volume successful")
         else:
             super(VCloudVolumeDriver, self).backup_volume(context, backup, backup_service)
 
     def restore_backup(self, context, backup, volume, backup_service):
         """Restore an existing backup to a new or existing volume."""
 
-        def _attach_disk_to_vm():
-            self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-        def _delete_volumes():
-            for created_volume in created_volumes:
-                self._vcloud_client.delete_volume(created_volume)
-
-        def _delete_vapp():
-            self._vcloud_client.delete_vapp(clone_vapp_name)
-
-        def _detach_disks_to_vm():
-            for attached_disk_name in attached_disk_names:
-                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
-                if result:
-                    self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-
-        def _power_off_vapp():
-            self._vcloud_client.power_off(clone_vapp_name)
+        LOG.debug("restore_backup backup:%s volume:%s backup_service:%s", vars(backup), vars(volume), vars(backup_service))
 
         if backup_service.DRIVER_NAME == 'VCloudBackupDriver':
-            undo_mgr = util.UndoManager()
-            created_volumes = []
-            attached_disk_names = []
+            vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['display_name'])
+            backup_name = backup['display_name']
+            vcloud_backup_volume_name = self._get_vcloud_volume_name(backup['id'], backup_name)           
 
-            try:
-                vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume['display_name'])
-                result, disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
-                if not result:
-                    msg = "cannot find volume %s in vcloud" % vcloud_volume_name
-                    LOG.error(msg)
-                    raise exception.CinderException(msg)
+            if volume['volume_attachment']:
+                dest_attached = True
+            else:
+                dest_attached = False
 
-
-                if volume['volume_attachment']:
-                    vapp_name = self._vcloud_client.get_disk_attached_vapp(vcloud_volume_name)
-                    vapp = self._vcloud_client._get_vcloud_vapp(vapp_name)
-                    if self._vcloud_client._get_status_first_vm(vapp) != constants.VM_POWER_OFF_STATUS:
-                        msg = "when volume is attached, the vm must be in power off state"
-                        LOG.info(msg)
-                        raise exception.CinderException(msg)
-
-                    self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-                    undo_mgr.undo_with(_attach_disk_to_vm)                
-                    LOG.debug("dest volume %s has been detached from vapp %s", vcloud_volume_name, vapp_name)
-
-
-                backup_name = backup['display_name']
-                vcloud_backup_volume_name = self._get_vcloud_volume_name(backup['id'], backup_name)
-
-                result, backup_disk_ref = self._vcloud_client.get_disk_ref(vcloud_backup_volume_name)
-                if not result:
-                    msg = "cannot find backup volume %s in vcloud" % vcloud_backup_volume_name
-                    LOG.error(msg)
-                    raise exception.CinderException(msg)
-                
-
-                #NOTE(nkapotoxin): create vapp with vapptemplate
-                network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
-                network_configs = self._vcloud_client.get_network_configs(network_names)
-
-                # create vapp
-                clone_vapp_name = 'server@%s' % vcloud_volume_name
-                clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
-                undo_mgr.undo_with(_delete_vapp)
-                LOG.debug("Create clone vapp %s successful" % clone_vapp_name)
-
-
-                # generate the network_connection
-                network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
-
-                # update network
-                self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
-                # update vm specification
-                #self._vcloud_client.modify_vm_cpu(clone_vapp, instance.get_flavor().vcpus)
-                #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
-                LOG.debug("Config vapp %s successful" % clone_vapp_name)
-
-
-                if clone_vapp_name.startswith('server@'):
-                    local_disk_name = 'Local@%s' % clone_vapp_name[len('server@'):]
-                else:
-                    local_disk_name = 'Local@%s' % clone_vapp_name
-
-                self._vcloud_client.create_volume(local_disk_name, 1)
-                undo_mgr.undo_with(_delete_volumes)
-                created_volumes.append(local_disk_name)
-                LOG.debug("Create Local disk %s for vapp %s successful", local_disk_name, clone_vapp_name)
-
-                result, local_disk_ref = self._vcloud_client.get_disk_ref(local_disk_name)
-                self._vcloud_client.attach_disk_to_vm(clone_vapp_name, local_disk_ref)
-                attached_disk_names.append(local_disk_name)
-                undo_mgr.undo_with(_detach_disks_to_vm)
-                LOG.debug("attach local disk %s to vapp %s successful", local_disk_name, clone_vapp_name)
- 
-
-                # power on it
-                self._vcloud_client.power_on_vapp(clone_vapp_name)
-                undo_mgr.undo_with(_power_off_vapp)
-
-
-                vapp_ip = self.get_vapp_ip(clone_vapp_name)
-                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
-                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-                LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
-
-                odevs = set(client.list_volume()['devices'])
-                if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, backup_disk_ref):
-                    attached_disk_names.append(vcloud_backup_volume_name)
-                    LOG.debug("Volume %s attached to: %s", vcloud_backup_volume_name, clone_vapp_name)
-
-                ndevs = set(client.list_volume()['devices'])
-                devs = ndevs - odevs
-                for dev in devs:
-                    client.attach_volume(backup['id'], dev, constants.DEV1)
-
-
-                odevs = set(client.list_volume()['devices'])
-                if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
-                    attached_disk_names.append(vcloud_volume_name)
-                    LOG.info("Volume %s attached to: %s", vcloud_volume_name, clone_vapp_name)
-                ndevs = set(client.list_volume()['devices'])
-                devs = ndevs - odevs
-                for dev in devs:
-                    client.attach_volume(volume['id'], dev, constants.DEV2)
-
-                src_vref = {}
-                src_vref['id'] = backup['id']
-                src_vref['size'] = backup['size']            
-
-                LOG.debug('begin time of clone vloume(size %s GB) is %s', backup['size'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-
-                task = client.clone_volume(volume, src_vref)
-                task_state = client.query_task(task)
-                while client.query_task(task) == client_constants.TASK_DOING:
-                    time.sleep(30)
-                    task_state = client.query_task(task)
-
-                if task_state != client_constants.TASK_SUCCESS:
-                    msg = "restore back clone failed"
-                    LOG.error(msg)
-                    raise exception.CinderException(msg)
-                else:
-                    LOG.debug('end time of clone vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-
-                attached_disk_names.remove(vcloud_volume_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
-                if volume['volume_attachment']:
-                    undo_mgr.cancel_undo(_attach_disk_to_vm)
-                    self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
-
-                attached_disk_names.remove(local_disk_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, local_disk_ref)
-
-                attached_disk_names.remove(vcloud_backup_volume_name)
-                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, backup_disk_ref)
-
-                undo_mgr.cancel_undo(_power_off_vapp)
-                self._vcloud_client.power_off_vapp(clone_vapp_name)
-
-                undo_mgr.cancel_undo(_delete_vapp)
-                self._vcloud_client.delete_vapp(clone_vapp_name)
-
-                created_volumes.remove(local_disk_name)
-                self._vcloud_client.delete_volume(local_disk_name)
-            except Exception as e:
-                msg = _("Failed to restore backup reason %s, rolling back") % e
-                LOG.error(msg)
-                undo_mgr.rollback_and_reraise(msg=msg)
+            self._copy_volume_to_volume(vcloud_volume_name, 
+                                        volume['size'],
+                                        volume['id'],
+                                        vcloud_backup_volume_name, 
+                                        backup['size'],
+                                        backup['id'],
+                                        created = True,
+                                        dest_attached = dest_attached)
+            LOG.debug("restore backup successful")
         else:
             super(VCloudVolumeDriver, self).restore_backup(context, backup, volume, backup_service)
 

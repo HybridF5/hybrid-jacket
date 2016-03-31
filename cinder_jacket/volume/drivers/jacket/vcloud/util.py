@@ -32,6 +32,7 @@ from eventlet import greenthread
 
 from cinder.i18n import _
 from cinder import exception
+from cinder.openstack.common import excutils
 from cinder.openstack.common import log as logging
 
 
@@ -58,6 +59,9 @@ class UndoManager(object):
 
     def cancel_undo(self, undo_func):
         self.undo_stack.remove(undo_func)
+
+    def count_func(self, undo_func):
+        return self.undo_stack.count(undo_func)
 
     def _rollback(self):
         for undo_func in reversed(self.undo_stack):
