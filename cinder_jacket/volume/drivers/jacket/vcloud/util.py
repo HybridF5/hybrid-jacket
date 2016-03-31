@@ -46,6 +46,35 @@ READ_CHUNKSIZE = 65536
 QUEUE_BUFFER_SIZE = 10
 
 
+class UndoManager(object):
+    """Provides a mechanism to facilitate rolling back a series of actions
+    when an exception is raised.
+    """
+    def __init__(self):
+        self.undo_stack = []
+
+    def undo_with(self, undo_func):
+        self.undo_stack.append(undo_func)
+
+    def cancel_undo(self, undo_func):
+        self.undo_stack.remove(undo_func)
+
+    def _rollback(self):
+        for undo_func in reversed(self.undo_stack):
+            undo_func()
+
+    def rollback_and_reraise(self, msg=None, **kwargs):
+        """Rollback a series of actions then re-raise the exception.
+
+        .. note:: (sirp) This should only be called within an
+                  exception handler.
+        """
+        with excutils.save_and_reraise_exception():
+            if msg:
+                LOG.exception(msg, **kwargs)
+
+            self._rollback()
+
 class GlanceFileRead(object):
     """Glance file read handler class."""
 

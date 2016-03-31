@@ -424,11 +424,13 @@ class VCloudDriver(driver.ComputeDriver):
         def _delete_volume():
             self._vcloud_client.delete_volume(disk_name)
 
-        def _detach_disk_to_vm():
+        def _detach_disks_to_vm():
             for attached_disk_name in attached_disk_names:
-                self._vcloud_client.detach_disk_from_vm(attached_disk_name)
+                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
+                if result:
+                    self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
-        def _power_off():
+        def _power_off_vapp():
             self._vcloud_client.power_off(vapp_name)
 
         undo_mgr = utils.UndoManager()
@@ -466,9 +468,8 @@ class VCloudDriver(driver.ComputeDriver):
             else:
                 vapp = self._vcloud_client.create_vapp(vapp_name,image_uuid , network_configs,
                                                        root_gb=instance.get_flavor().root_gb)
-
-            LOG.debug("Create vapp %s successful", vapp_name)
             undo_mgr.undo_with(_del_vapp)
+            LOG.debug("Create vapp %s successful", vapp_name)
 
             # generate the network_connection
             network_connections = self._vcloud_client.get_network_connections(vapp, network_names)
@@ -516,9 +517,9 @@ class VCloudDriver(driver.ComputeDriver):
                 else:
                     disk_name = 'Local@%s' % vapp_name
                 self._vcloud_client.create_volume(disk_name, instance.get_flavor().root_gb)
-
                 undo_mgr.undo_with(_delete_volume)
-                    
+                LOG.debug("Create local disk %s for app %s successful", disk_name, vapp_name)
+
                 result, disk_ref = self._vcloud_client.get_disk_ref(disk_name)
                 if result:
                     self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
@@ -527,13 +528,12 @@ class VCloudDriver(driver.ComputeDriver):
                     LOG.error(msg)
                     raise exception.NovaException(msg)
 
-                LOG.debug("Create local disk %s for app %s successful", disk_name, vapp_name)
                 attached_disk_names.append(disk_name)
-                undo_mgr.undo_with(_detach_disk_to_vm)
+                undo_mgr.undo_with(_detach_disks_to_vm)
 
             # power on it
             self._vcloud_client.power_on_vapp(vapp_name)
-            undo_mgr.undo_with(_power_off)
+            undo_mgr.undo_with(_power_off_vapp)
 
             if is_hybrid_vm:
                 vapp_ip = self.get_vapp_ip(vapp_name)
@@ -571,11 +571,10 @@ class VCloudDriver(driver.ComputeDriver):
 
                         odevs = set(client.list_volume()['devices'])
                         if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
+                            attached_disk_names.append(vcloud_volume_name)
                             LOG.debug("Volume %(volume_name)s attached to: %(instance_name)s",
                                      {'volume_name': vcloud_volume_name,
                                       'instance_name': vapp_name})
-
-                        attached_disk_names.append(vcloud_volume_name)
 
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
@@ -589,8 +588,8 @@ class VCloudDriver(driver.ComputeDriver):
                         raise exception.NovaException(msg)
 
                 LOG.info("To create container %s for vapp %s", image_meta.get('name'), vapp_name)
-                client.create_container(image_meta.get('name')
-                                        injected_files=injected_files,
+                client.create_container(image_meta.get('name'),
+                                        inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
                                         block_device_info=new_block_device_info)
@@ -602,6 +601,7 @@ class VCloudDriver(driver.ComputeDriver):
             self._binding_host(context, network_info, instance.uuid)
         except Exception as e:
             msg = _("Failed to spawn reason %s, rolling back") % e
+            LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg, instance=instance)            
 
     def _spawn_from_volume(self, context, instance, image_meta, injected_files,
@@ -612,11 +612,13 @@ class VCloudDriver(driver.ComputeDriver):
         def _del_vapp():
             self._vcloud_client.delete_vapp(vapp_name)
 
-        def _detach_disk_to_vm():
+        def _detach_disks_to_vm():
             for attached_disk_name in attached_disk_names:
-                self._vcloud_client.detach_disk_from_vm(attached_disk_name)
+                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
+                if result:
+                    self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
-        def _power_off():
+        def _power_off_vapp():
             self._vcloud_client.power_off(vapp_name)
 
         undo_mgr = utils.UndoManager()
@@ -676,7 +678,7 @@ class VCloudDriver(driver.ComputeDriver):
                                   'instance_name': vapp_name})
 
                     attached_disk_names.append(vcloud_volume_name)
-                    undo_mgr.undo_with(_detach_disk_to_vm)
+                    undo_mgr.undo_with(_detach_disks_to_vm)
                 else:
                     msg = _('Unable to find volume %s to instance')% vcloud_volume_name
                     LOG.error(msg)
@@ -684,13 +686,13 @@ class VCloudDriver(driver.ComputeDriver):
 
                 # power on it
                 self._vcloud_client.power_on_vapp(vapp_name)
-                undo_mgr.undo_with(_power_off)
+                undo_mgr.undo_with(_power_off_vapp)
 
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
 
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-                LOG.debug("hybrid service has been up")
+                LOG.debug("vapp %s hybrid service has been up", vapp_name)
 
                 new_block_device_info = copy.deepcopy(block_device_info)
                 new_block_device_info['block_device_mapping'] = []
@@ -713,10 +715,9 @@ class VCloudDriver(driver.ComputeDriver):
 
                         odevs = set(client.list_volume()['devices'])
                         if self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref):
+                            attached_disk_names.append(vcloud_volume_name)
                             LOG.debug("Volume %(volume_name)s attached to: %(instance_name)s",
                                      {'volume_name': vcloud_volume_name, 'instance_name': vapp_name})
-
-                        attached_disk_names.append(vcloud_volume_name)
 
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
@@ -737,7 +738,7 @@ class VCloudDriver(driver.ComputeDriver):
                 LOG.info("To create container %s for vapp %s", image_meta.get('name', ''), vapp_name)
                 client.create_container(volume_image_metadata['image_name'],
                                         root_volume_id=root_volume_id,
-                                        injected_files=injected_files,
+                                        inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
                                         block_device_info=new_block_device_info)
@@ -753,6 +754,7 @@ class VCloudDriver(driver.ComputeDriver):
                 raise exception.NovaException(msg)
         except Exception as e:
             msg = _("Failed to spawn reason %s, rolling back") % e
+            LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg, instance=instance)
 
     def spawn(self, context, instance, image_meta, injected_files,
@@ -1244,6 +1246,7 @@ class VCloudDriver(driver.ComputeDriver):
 
     def power_off(self, instance, shutdown_timeout=0, shutdown_attempts=0):
         LOG.debug('begin power off instance: %s' % instance.uuid)
+
         try:
             vapp_name = self._get_vcloud_vapp_name(instance)
             if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM:
@@ -1259,17 +1262,22 @@ class VCloudDriver(driver.ComputeDriver):
             raise exception.NovaException(msg)
 
     def power_on(self, context, instance, network_info, block_device_info):
-        vapp_name = self._get_vcloud_vapp_name(instance)
-        self._vcloud_client.power_on_vapp(vapp_name)
+        LOG.debug('begin power on instance: %s' % instance.uuid)
 
-        if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM: 
-            vapp_ip = self.get_vapp_ip(vapp_name)
-            self._wait_hybrid_service_up(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
-            try:
+        try:
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            self._vcloud_client.power_on_vapp(vapp_name)
+
+            if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM: 
+                vapp_ip = self.get_vapp_ip(vapp_name)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 client.start_container(network_info = network_info, block_device_info = block_device_info)
-            except (errors.NotFound, errors.APIError) as e:
-                LOG.error("power on instance %s failed, reason %s" % (vapp_name, e))
+        except Exception as e:
+            msg = 'power on instanc %s failed, reason %s' % (instance.uuid, e)
+            LOG.error(msg)
+            raise exception.NovaException(msg)
 
     def soft_delete(self, instance):
         LOG.debug("soft_delete")
