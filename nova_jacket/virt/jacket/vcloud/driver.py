@@ -358,13 +358,17 @@ class VCloudDriver(driver.ComputeDriver):
 
     def list_instances(self):
         LOG.debug("list_instances")
-        return self.instances.keys()
+        name_labels = []
+        for instance in self.instances.values():
+            name_labels.append(instance.name)
+        return name_labels
 
     def list_instance_uuids(self):
         """Return the UUIDS of all the instances known to the virtualization
         layer, as a list.
         """
         LOG.debug("list_instance_uuids")
+        return self.instances.keys()
 
     def rebuild(self, context, instance, image_meta, injected_files,
                 admin_password, bdms, detach_block_devices,
@@ -430,7 +434,7 @@ class VCloudDriver(driver.ComputeDriver):
                     self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
         def _power_off_vapp():
-            self._vcloud_client.power_off(vapp_name)
+            self._vcloud_client.power_off_vapp(vapp_name)
 
         undo_mgr = utils.UndoManager()
         attached_disk_names = []
@@ -587,7 +591,7 @@ class VCloudDriver(driver.ComputeDriver):
                         raise exception.NovaException(msg)
 
                 LOG.info("To create container %s for vapp %s", image_meta.get('name'), vapp_name)
-                client.create_container(image_meta.get('name'),
+                client.create_container(image_meta.get('name'), image_uuid,
                                         inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
@@ -598,10 +602,11 @@ class VCloudDriver(driver.ComputeDriver):
 
             # update port bind host
             self._binding_host(context, network_info, instance.uuid)
+            self.instances[instance.uuid] = instance
         except Exception as e:
             msg = _("Failed to spawn reason %s, rolling back") % e
             LOG.error(msg)
-            undo_mgr.rollback_and_reraise(msg=msg, instance=instance)            
+            undo_mgr.rollback_and_reraise(msg=msg, instance=instance)
 
     def _spawn_from_volume(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
@@ -618,7 +623,7 @@ class VCloudDriver(driver.ComputeDriver):
                     self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
         def _power_off_vapp():
-            self._vcloud_client.power_off(vapp_name)
+            self._vcloud_client.power_off_vapp(vapp_name)
 
         undo_mgr = utils.UndoManager()
         attached_disk_names = []
@@ -736,6 +741,7 @@ class VCloudDriver(driver.ComputeDriver):
 
                 LOG.info("To create container %s for vapp %s", image_meta.get('name', ''), vapp_name)
                 client.create_container(volume_image_metadata['image_name'],
+                                        volume_image_metadata['image_id'],
                                         root_volume_id=root_volume_id,
                                         inject_files=injected_files,
                                         admin_password=admin_password,
@@ -747,6 +753,8 @@ class VCloudDriver(driver.ComputeDriver):
 
                 # update port bind host
                 self._binding_host(context, network_info, instance.uuid)
+
+                self.instances[instance.uuid] = instance
             else:
                 msg = _("boot from volume for normal vm not supported!")
                 LOG.error(msg)
@@ -836,6 +844,8 @@ class VCloudDriver(driver.ComputeDriver):
 
         self.cleanup(context, instance, network_info, block_device_info,
                     destroy_disks, migrate_data)
+
+        self.instances.pop(instance.uuid, None)
 
         # delete agent
         instance_id = instance.uuid

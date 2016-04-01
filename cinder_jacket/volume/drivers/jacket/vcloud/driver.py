@@ -371,18 +371,16 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                     raise exception.CinderException(msg)
 
                 self._vcloud_client.detach_disk_from_vm(source_vapp_name, source_disk_ref)
-                            
-                detached_disk = {}
-                detached_disk['vapp_name'] = source_vapp_name
-                detached_disk['disk_ref'] = source_disk_ref
-                detached_disks.append(detached_disk)
+
+                source_detached_disk = {}
+                source_detached_disk['vapp_name'] = source_vapp_name
+                source_detached_disk['disk_ref'] = source_disk_ref
+                detached_disks.append(source_detached_disk)
                 undo_mgr.undo_with(_attach_disks_to_vm)
                 LOG.debug("source volume %s has been detached from vapp %s", source_volume_name, source_vapp_name)
 
             if not created:
                 self._vcloud_client.create_volume(dest_volume_name, dest_volume_size)
-                result, dest_disk_ref = self._vcloud_client.get_disk_ref(dest_volume_name)
-
                 created_volumes.append(dest_volume_name)
                 undo_mgr.undo_with(_delete_volumes)
                 LOG.debug("dst volume %s(%s GB) has been created", dest_volume_name, dest_volume_size)
@@ -391,7 +389,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             if not result:
                 msg = _('dest volume %s cannot found') % dest_volume_name
                 LOG.error(msg)
-                raise exception.CinderException(msg)                
+                raise exception.CinderException(msg)
 
             if dest_attached:
                 dest_vapp_name = self._vcloud_client.get_disk_attached_vapp(dest_volume_name)
@@ -403,10 +401,10 @@ class VCloudVolumeDriver(driver.VolumeDriver):
 
                 self._vcloud_client.detach_disk_from_vm(dest_vapp_name, dest_disk_ref)
 
-                detached_disk = {}
-                detached_disk['vapp_name'] = dest_vapp_name
-                detached_disk['disk_ref'] = dest_disk_ref
-                detached_disks.append(detached_disk)
+                dest_detached_disk = {}
+                dest_detached_disk['vapp_name'] = dest_vapp_name
+                dest_detached_disk['disk_ref'] = dest_disk_ref
+                detached_disks.append(dest_detached_disk)
                 if undo_mgr.count_func(_attach_disks_to_vm) == 0:
                     undo_mgr.undo_with(_attach_disks_to_vm)
                 LOG.debug("dst volume %s has been detached from vapp %s", dest_volume_name, dest_vapp_name)
@@ -486,15 +484,14 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             src_volume['size'] = source_volume_size
 
             task = client.clone_volume(dest_volume, src_volume)
-            task_state = client.query_task(task)
-            while task_state == client_constants.TASK_DOING:
+            result = client.query_task(task)
+            while result['code'] == client_constants.TASK_DOING:
                 time.sleep(30)
-                task_state = client.query_task(task)
+                result = client.query_task(task)
 
-            if task_state != client_constants.TASK_SUCCESS:
-                msg = "copy volume failed"
-                LOG.error(msg)
-                raise exception.CinderException(msg)
+            if result['code'] != client_constants.TASK_SUCCESS:
+                LOG.error(result['message'])
+                raise exception.CinderException(result['message'])
             else:
                 LOG.debug('end time of copy vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
@@ -504,10 +501,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             attached_disk_names.remove(source_volume_name)
             self._vcloud_client.detach_disk_from_vm(clone_vapp_name, source_disk_ref)
             if source_attached:
-                detached_disk = {}
-                detached_disk['vapp_name'] = source_vapp_name
-                detached_disk['disk_ref'] = source_disk_ref
-                detached_disks.remove(detached_disk)
+                detached_disks.remove(source_detached_disk)
                 self._vcloud_client.attach_disk_to_vm(source_vapp_name, source_disk_ref)
 
             attached_disk_names.remove(local_disk_name)
@@ -516,10 +510,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             attached_disk_names.remove(dest_volume_name)
             self._vcloud_client.detach_disk_from_vm(clone_vapp_name, dest_disk_ref)
             if dest_attached:
-                detached_disk = {}
-                detached_disk['vapp_name'] = dest_vapp_name
-                detached_disk['disk_ref'] = dest_disk_ref
-                detached_disks.remove(detached_disk)
+                detached_disks.remove(dest_detached_disk)
                 self._vcloud_client.attach_disk_to_vm(dest_vapp_name, dest_disk_ref)
 
             undo_mgr.cancel_undo(_delete_vapp)
