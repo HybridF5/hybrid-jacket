@@ -1206,7 +1206,6 @@ class VCloudDriver(driver.ComputeDriver):
 
         return metadata
 
-
     def snapshot(self, context, instance, image_id, update_task_state):
         LOG.debug("context:%s", vars(context))
         LOG.debug("instance:%s", vars(instance))
@@ -1241,7 +1240,7 @@ class VCloudDriver(driver.ComputeDriver):
             else:
                 LOG.debug('end time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
-            image_info = client.image_info(snapshot['name'], image_id])
+            image_info = client.image_info(snapshot['name'], image_id)
             if not image_info:
                 LOG.error('cannot get image info')
                 raise exception.NovaException('cannot get image info')
