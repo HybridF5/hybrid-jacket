@@ -10,12 +10,15 @@ class ContainerApiMixin(object):
                          inject_files=None, admin_password=None, timeout=10):
         params = {'t': timeout}
         url = self._url("/container/create")
-        create_config = utils.create_container_config(image_name, image_id, root_volume_id=root_volume_id, network_info=network_info,
-                                                      block_device_info=block_device_info, inject_files=inject_files,
-                                                      admin_password=admin_password)
+        create_config = utils.create_container_config(image_name, image_id,
+                            root_volume_id=root_volume_id, 
+                            network_info=network_info,
+                            block_device_info=block_device_info, 
+                            inject_files=inject_files,
+                            admin_password=admin_password)
         res = self._post_json(url, params=params, data=create_config)
-        self._raise_for_status(res)
-        return res.raw
+        create_task = self._result(res, True)
+        return create_task
 
     def restart_container(self, timeout=10, network_info=None, block_device_info=None):
         params = {'t': timeout}
@@ -113,8 +116,23 @@ class ContainerApiMixin(object):
     
     def status(self):
         """ Query Container status.
+            return: { "status": "Up 6 days"}
         """
         url = self._url("/container/status")
         status = self._result(self._get(url), True)
-        return status['status']
+        return status
+
+
+    def image_info(self, image_name, image_id):
+        """ Query Container status.
+            return: {
+                     "size": 253283606,
+                     "name": "ubuntu-docker",
+                     "id": "eee8ccb1-b3f7-4b9c-9756-7437d1793fa5"
+                     }
+
+        """
+        url = self._url("/container/image-info?image_id={}&image_name={}", image_id, image_name)
+        image_info = self._result(self._get(url), True)
+        return image_info
 

@@ -31,18 +31,20 @@ from nova.i18n import _
 from nova import exception
 from nova.virt import driver
 from nova.network import neutronv2
+from nova.image import glance
+from nova.image import image_utils
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.context import RequestContext
 from nova.openstack.common import excutils
 from nova.openstack.common import fileutils
 from nova.openstack.common import jsonutils
+from nova.compute import utils as compute_utils
 from nova.volume.cinder import API as cinder_api
 from nova.openstack.common import log as logging
 
 from nova.virt.jacket.vcloud import util
 from nova.virt.jacket.vcloud import constants
-from nova.virt.jacket.common import fake_driver
 from nova.virt.jacket.common import common_tools
 from nova.virt.jacket.vcloud import hyper_agent_api
 from nova.virt.jacket.vcloud.vcloud import VCLOUD_STATUS
@@ -50,6 +52,8 @@ from nova.virt.jacket.vcloud.vcloud_client import VCloudClient
 
 from wormholeclient import errors
 from wormholeclient.client import Client
+from wormholeclient import constants as client_constants
+
 
 vcloudapi_opts = [
 
@@ -261,12 +265,13 @@ class VCloudDriver(driver.ComputeDriver):
     """The VCloud host connection object."""
 
     def __init__(self, virtapi, scheme="https"):
-        #to do
+        #to do, read from db when boot
         self.instances = {}
 
         self._node_name = CONF.vcloud.vcloud_node_name
         self._vcloud_client = VCloudClient(scheme=scheme)
-        self.cinder_api = cinder_api()
+        self._cinder_api = cinder_api()
+        self._image_api = image.API()
 
         if not os.path.exists(CONF.vcloud.vcloud_conversion_dir):
             os.makedirs(CONF.vcloud.vcloud_conversion_dir)
@@ -357,7 +362,6 @@ class VCloudDriver(driver.ComputeDriver):
         return {'memory_mb': 0}
 
     def list_instances(self):
-        LOG.debug("list_instances")
         name_labels = []
         for instance in self.instances.values():
             name_labels.append(instance.name)
@@ -367,7 +371,6 @@ class VCloudDriver(driver.ComputeDriver):
         """Return the UUIDS of all the instances known to the virtualization
         layer, as a list.
         """
-        LOG.debug("list_instance_uuids")
         return self.instances.keys()
 
     def rebuild(self, context, instance, image_meta, injected_files,
@@ -590,12 +593,22 @@ class VCloudDriver(driver.ComputeDriver):
                         LOG.error(msg)
                         raise exception.NovaException(msg)
 
-                LOG.info("To create container %s for vapp %s", image_meta.get('name'), vapp_name)
-                client.create_container(image_meta.get('name'), image_uuid,
+                LOG.info("To create container %s for vapp %s time %s", image_meta.get('name'), vapp_name,
+                                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                task = client.create_container(image_meta.get('name'), image_uuid,
                                         inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
                                         block_device_info=new_block_device_info)
+                while task['code'] == client_constants.TASK_DOING:
+                    time.sleep(10)
+                    task = client.query_task(task)
+
+                if task['code'] != client_constants.TASK_SUCCESS:
+                    LOG.error(task['message'])
+                    raise exception.NovaException(task['message'])
+                else:
+                    LOG.debug('end time of create container is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
                 LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
                 client.start_container(network_info=network_info, block_device_info=block_device_info)
@@ -635,7 +648,7 @@ class VCloudDriver(driver.ComputeDriver):
             root_bdm = self._get_root_bdm_from_bdms(bdms, root_device_name)
 
             root_volume_id = root_bdm['connection_info']['data']['volume_id']
-            root_volume = self.cinder_api.get(context, root_volume_id)
+            root_volume = self._cinder_api.get(context, root_volume_id)
             volume_image_metadata = root_volume['volume_image_metadata']
 
             rabbit_host = CONF.rabbit_host
@@ -693,7 +706,7 @@ class VCloudDriver(driver.ComputeDriver):
                 undo_mgr.undo_with(_power_off_vapp)
 
                 vapp_ip = self.get_vapp_ip(vapp_name)
-                client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
 
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
                 LOG.debug("vapp %s hybrid service has been up", vapp_name)
@@ -739,14 +752,25 @@ class VCloudDriver(driver.ComputeDriver):
                 file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
 
-                LOG.info("To create container %s for vapp %s", image_meta.get('name', ''), vapp_name)
-                client.create_container(volume_image_metadata['image_name'],
+                LOG.info("To create container %s for vapp %s time %s", image_meta.get('name', ''), vapp_name,
+                                             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                task = client.create_container(volume_image_metadata['image_name'],
                                         volume_image_metadata['image_id'],
                                         root_volume_id=root_volume_id,
                                         inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
                                         block_device_info=new_block_device_info)
+
+                while task['code'] == client_constants.TASK_DOING:
+                    time.sleep(10)
+                    task = client.query_task(task)
+
+                if task['code'] != client_constants.TASK_SUCCESS:
+                    LOG.error(task['message'])
+                    raise exception.NovaException(task['message'])
+                else:
+                    LOG.debug('end time of create container is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
                 LOG.info("To start container network:%s, block_device_info:%s for instance %s", network_info, block_device_info, vapp_name)
                 client.start_container(network_info=network_info, block_device_info=block_device_info)
@@ -975,7 +999,7 @@ class VCloudDriver(driver.ComputeDriver):
         volume_id = connection_info['data']['volume_id']
         driver_type = connection_info['driver_volume_type']
 
-        volume = self.cinder_api.get(context, volume_id)
+        volume = self._cinder_api.get(context, volume_id)
         volume_name = volume['display_name']
         # use volume_name as vcloud disk name, remove prefix str `volume@`
         # if volume_name does not start with volume@, then use volume id instead
@@ -1157,51 +1181,83 @@ class VCloudDriver(driver.ComputeDriver):
                                    timeout=0, retry_interval=0):
         LOG.debug("migrate_disk_and_power_off")
 
-    #TODO: test it
+    def _create_snapshot_metadata(self, base, instance, img_fmt, snp_name):
+        metadata = {'is_public': False,
+                    'status': 'active',
+                    'name': snp_name,
+                    'properties': {
+                                   'kernel_id': instance['kernel_id'],
+                                   'image_location': 'snapshot',
+                                   'image_state': 'available',
+                                   'owner_id': instance['project_id'],
+                                   'ramdisk_id': instance['ramdisk_id'],
+                                   }
+                    }
+        if instance['os_type']:
+            metadata['properties']['os_type'] = instance['os_type']
+
+        # NOTE(vish): glance forces ami disk format to be ami
+        if base.get('disk_format') == 'ami':
+            metadata['disk_format'] = 'ami'
+        else:
+            metadata['disk_format'] = img_fmt
+
+        metadata['container_format'] = base.get('container_format', 'bare')
+
+        return metadata
+
     def snapshot(self, context, instance, image_id, update_task_state):
+        LOG.debug("context:%s", vars(context))
+        LOG.debug("instance:%s", vars(instance))
+        LOG.debug("image_id:%s update_task_state:%s", image_id, update_task_state)
 
-        _update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
-        # 1. get vmdk url
-        vapp_name = self._get_vcloud_vapp_name(instance)
-        remote_vmdk_url = self._vcloud_client.query_vmdk_url(vapp_name)
+        try:
+            base_image_ref = instance['image_ref']
+            base = compute_utils.get_image_metadata(context, self._image_api, base_image_ref, instance)
 
-        # 2. download vmdk
-        temp_dir = '%s/%s' % (CONF.vcloud.vcloud_conversion_dir, instance.uuid)
-        fileutils.ensure_tree(temp_dir)
+            snapshot = self._image_api.get(context, image_id)
+            metadata = self._create_snapshot_metadata(base,
+                                                      instance,
+                                                      snapshot['disk_format'],
+                                                      snapshot['name'])
 
-        vmdk_name = remote_vmdk_url.split('/')[-1]
-        local_file_name = '%s/%s' % (temp_dir, vmdk_name)
+            update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
 
-        self._download_vmdk_from_vcloud(
-            context,
-            remote_vmdk_url,
-            local_file_name)
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            vapp_ip = self.get_vapp_ip(vapp_name)
+            client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+            self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
 
-        # 3. convert vmdk to qcow2
-        converted_file_name = temp_dir + '/converted-file.qcow2'
-        convert_commond = "qemu-img convert -f %s -O %s %s %s" % \
-            ('vmdk',
-             'qcow2',
-             local_file_name,
-             converted_file_name)
-        convert_result = subprocess.call([convert_commond], shell=True)
+            LOG.debug('begin time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+            task = client.create_image(snapshot['name'], image_id)
+            while task['code'] == client_constants.TASK_DOING:
+                time.sleep(30)
+                task = client.query_task(task)
 
-        if convert_result != 0:
-            # do something, change metadata
-            LOG.error('converting file failed')
+            if task['code'] != client_constants.TASK_SUCCESS:
+                LOG.error(task['message'])
+                raise exception.NovaException(task['message'])
+            else:
+                LOG.debug('end time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
-        # 4. upload qcow2 to image repository\
-        update_task_state(task_state=task_states.IMAGE_UPLOADING,
-                          expected_state=task_states.IMAGE_PENDING_UPLOAD)
+            image_info = client.image_info(snapshot['name'], image_id)
+            if not image_info:
+                LOG.error('cannot get image info')
+                raise exception.NovaException('cannot get image info')
 
-        self._upload_image_to_glance(
-            context,
-            converted_file_name,
-            image_id,
-            instance)
+            update_task_state(task_state=task_states.IMAGE_UPLOADING,
+                              expected_state=task_states.IMAGE_PENDING_UPLOAD)
 
-        # 5. delete temporary files
-        shutil.rmtree(temp_dir, ignore_errors=True)
+            with image_utils.temporary_file() as tmp:
+                image_service, image_id = glance.get_remote_image_service(context, image_id)
+                with fileutils.file_open(tmp, 'wb+') as f:
+                    f.truncate(image_info['size'])
+                    image_service.update(context, image_id, metadata, f)
+                    self._update_vm_task_state(instance, task_state=instance.task_state)
+
+        except Exception as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error('snapshot failed,reason %s' % e)
 
     def post_interrupted_snapshot_cleanup(self, context, instance):
         """Cleans up any resources left after an interrupted snapshot.
@@ -1224,10 +1280,28 @@ class VCloudDriver(driver.ComputeDriver):
         LOG.debug("finish_revert_migration")
 
     def pause(self, instance):
-        LOG.debug("pause")
+        try:
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM:
+                vapp_ip = self.get_vapp_ip(vapp_name)                
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                client.pause_container()
+        except Exception as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error('pause failed,reason %s' % e)
 
     def unpause(self, instance):
-        LOG.debug("unpause")
+        try:
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM:
+                vapp_ip = self.get_vapp_ip(vapp_name)                
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                client.unpause_container()
+        except Exception as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error('unpause failed,reason %s' % e)
 
     def suspend(self, instance):
         LOG.debug("suspend")
@@ -1278,13 +1352,12 @@ class VCloudDriver(driver.ComputeDriver):
             self._vcloud_client.power_on_vapp(vapp_name)
 
             if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM: 
-                vapp_ip = self.get_vapp_ip(vapp_name)
-                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-
+                vapp_ip = self.get_vapp_ip(vapp_name)                
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
                 client.start_container(network_info = network_info, block_device_info = block_device_info)
         except Exception as e:
-            msg = 'power on instanc %s failed, reason %s' % (instance.uuid, e)
+            msg = 'power on instance %s failed, reason %s' % (instance.uuid, e)
             LOG.error(msg)
             raise exception.NovaException(msg)
 
@@ -1655,33 +1728,6 @@ class VCloudDriver(driver.ComputeDriver):
 
         util.start_transfer(context, remote_file_handle, file_size,
                             write_file_handle=local_file_handle)
-
-    def _upload_image_to_glance(
-            self, context, src_file_name, image_id, instance):
-
-        vm_task_state = instance.task_state
-        file_size = os.path.getsize(src_file_name)
-        read_file_handle = fileutils.file_open(src_file_name, "rb")
-
-        metadata = IMAGE_API.get(context, image_id)
-
-        # The properties and other fields that we need to set for the image.
-        image_metadata = {"disk_format": "qcow2",
-                          "is_public": "false",
-                          "name": metadata['name'],
-                          "status": "active",
-                          "container_format": "bare",
-                          "size": file_size,
-                          "properties": {"owner_id": instance['project_id']}}
-
-        util.start_transfer(context,
-                            read_file_handle,
-                            file_size,
-                            image_id=metadata['id'],
-                            image_meta=image_metadata,
-                            task_state=task_states.IMAGE_UPLOADING,
-                            instance=instance)
-        self._update_vm_task_state(instance, task_state=vm_task_state)
 
     def _get_vapp_ip(self, instance):
         instance_id = instance.uuid
