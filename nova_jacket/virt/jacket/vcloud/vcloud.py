@@ -20,7 +20,7 @@ from oslo.utils import excutils
 from oslo.vmware.common import loopingcall
 from requests import exceptions as requests_excep
 
-from nova.i18n import _, _LW, _LE
+from nova.i18n import _, _LI, _LW, _LE
 from nova.openstack.common import log as logging
 from nova.virt.jacket.vcloud import exceptions
 

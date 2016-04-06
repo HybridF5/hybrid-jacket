@@ -38,7 +38,6 @@ vcloudapi_opts = [
                help='node name,which a node is a vcloud vcd '
                'host.'),
     cfg.StrOpt('vcloud_host_ip',
-               default='162.3.110.103',
                help='Hostname or IP address for connection to VMware VCD '
                'host.'),
     cfg.IntOpt('vcloud_host_port',
@@ -46,19 +45,15 @@ vcloudapi_opts = [
                help='Host port for cnnection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_host_username',
-               default='nkapotoxin',
                help='Host username for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_host_password',
-               default='Galax0088',
                help='Host password for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_org',
-               default='nkapotoxin-org',
                help='User org for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_vdc',
-               default='nkapotoxin-hybrid-org',
                help='Vdc for connection to VMware VCD '
                'host.'),
     cfg.StrOpt('vcloud_version',
@@ -484,14 +479,13 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             src_volume['size'] = source_volume_size
 
             task = client.clone_volume(dest_volume, src_volume)
-            result = client.query_task(task)
-            while result['code'] == client_constants.TASK_DOING:
+            while task['code'] == client_constants.TASK_DOING:
                 time.sleep(30)
-                result = client.query_task(task)
+                task = client.query_task(task)
 
-            if result['code'] != client_constants.TASK_SUCCESS:
-                LOG.error(result['message'])
-                raise exception.CinderException(result['message'])
+            if task['code'] != client_constants.TASK_SUCCESS:
+                LOG.error(task['message'])
+                raise exception.CinderException(task['message'])
             else:
                 LOG.debug('end time of copy vloume is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
@@ -789,37 +783,134 @@ class VCloudVolumeDriver(driver.VolumeDriver):
     @utils.synchronized("vcloud_volume_copy_lock", external=True)
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume."""
-        LOG.debug('Copying volume %(volume_name)s to image %(image_name)s.',
-                  {'volume_name': volume['display_name'],
-                   'image_name': image_meta.get('name')})
 
-        LOG.error('begin time of copy_volume_to_image is %s' %
+        def _delete_vapp():
+            self._vcloud_client.delete_vapp(clone_vapp_name)
+
+        def _detach_disks_to_vm():
+            for attached_disk_name in attached_disk_names:
+                result, disk_ref = self._vcloud_client.get_disk_ref(attached_disk_name)
+                if result:
+                    self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
+
+        def _power_off_vapp():
+            self._vcloud_client.power_off_vapp(clone_vapp_name)
+
+        undo_mgr = util.UndoManager()
+        attached_disk_names = []
+
+        try:
+            LOG.info('begin time of copy_volume_to_image is %s' %
                   (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
 
-        container_format = image_meta.get('container_format')
-        if container_format in VGW_URLS:
-            # attach the volume to vgw vm
-            disk_ref, vapp_name = self._attach_volume_to_vgw(volume)
+            container_format = image_meta.get('container_format')
+            if container_format in VGW_URLS:
+                # attach the volume to vgw vm
+                disk_ref, vapp_name = self._attach_volume_to_vgw(volume)
 
-            try:
-                # use ssh client connect to vgw_host and
-                # copy image file to volume
-                self._copy_volume_to_file_to_vgw(image_meta)
-            finally:
-                # detach volume from vgw and
-                self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
-            # create an empty file to glance
-            with image_utils.temporary_file() as tmp:
-                image_utils.upload_volume(context,
-                                          image_service,
-                                          image_meta,
-                                          tmp)
+                try:
+                    # use ssh client connect to vgw_host and  copy image file to volume
+                    self._copy_volume_to_file_to_vgw(image_meta)
+                finally:
+                    self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
 
-            LOG.error('end time of copy_volume_to_image is %s' %
-                      (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+                # create an empty file to glance
+                with image_utils.temporary_file() as tmp:
+                    image_utils.upload_volume(context,
+                                              image_service,
+                                              image_meta,
+                                              tmp)
+            elif container_format == constants.HYBRID_VM:
+                volume_name = volume['display_name']
+                vcloud_volume_name = self._get_vcloud_volume_name(volume['id'], volume_name)
 
-        else:
-            pass
+                result,disk_ref = self._vcloud_client.get_disk_ref(vcloud_volume_name)
+                if not result:
+                    msg = 'can not find volume %s in vcloud!' %  vcloud_volume_name
+                    LOG.error(msg)
+                    raise exception.CinderException(msg)
+
+                if volume['volume_attachment']:
+                    msg = 'copy volume to image not support attached volume!'
+                    LOG.error(msg)
+                    raise exception.CinderException(msg)
+
+                #NOTE(nkapotoxin): create vapp with vapptemplate
+                network_names = [CONF.vcloud.provider_tunnel_network_name, CONF.vcloud.provider_base_network_name]
+                network_configs = self._vcloud_client.get_network_configs(network_names)
+
+                # create vapp
+                clone_vapp_name = 'server@%s' % image_meta['id']
+                clone_vapp = self._vcloud_client.create_vapp(clone_vapp_name, CONF.vcloud.base_image_id, network_configs)
+
+                undo_mgr.undo_with(_delete_vapp)
+                LOG.debug("Create clone vapp %s successful" % clone_vapp_name)
+
+                # generate the network_connection
+                network_connections = self._vcloud_client.get_network_connections(clone_vapp, network_names)
+
+                # update network
+                self._vcloud_client.update_vms_connections(clone_vapp, network_connections)
+
+                # update vm specification
+                #self._vcloud_client.modify_vm_cpu(clone_vapp, instance.get_flavor().vcpus)
+                #self._vcloud_client.modify_vm_memory(clone_vapp, instance.get_flavor().memory_mb)
+                LOG.debug("Config vapp %s successful" % clone_vapp_name)
+
+                if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, disk_ref):
+                    attached_disk_names.append(vcloud_volume_name)
+                    undo_mgr.undo_with(_detach_disks_to_vm)
+                    LOG.debug("Volume %s attached to: %s", vcloud_volume_name, clone_vapp_name)
+
+                # power on it
+                self._vcloud_client.power_on_vapp(clone_vapp_name)
+                undo_mgr.undo_with(_power_off_vapp)
+
+                vapp_ip = self.get_vapp_ip(clone_vapp_name)
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
+
+                LOG.debug('begin time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                task = client.create_image(image_meta['name'], image_meta['id'])
+                while task['code'] == client_constants.TASK_DOING:
+                    time.sleep(30)
+                    task = client.query_task(task)
+
+                if task['code'] != client_constants.TASK_SUCCESS:
+                    LOG.error(task['message'])
+                    raise exception.CinderException(task['message'])
+                else:
+                    LOG.debug('end time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+
+                image_info = client.image_info(image_meta['name'], image_meta['id'])
+                if not image_info:
+                    LOG.error('cannot get image info')
+                    raise exception.CinderException('cannot get image info')
+
+                with image_utils.temporary_file() as tmp:
+                    with fileutils.file_open(tmp, 'wb+') as f:
+                        f.truncate(image_info['size'])
+                        image_utils.upload_volume(context,
+                                                  image_service,
+                                                  image_meta,
+                                                  tmp,
+                                                  volume_format=image_meta['disk_format'])
+
+
+                undo_mgr.cancel_undo(_power_off_vapp)
+                self._vcloud_client.power_off_vapp(clone_vapp_name)
+
+                attached_disk_names.remove(vcloud_volume_name)
+
+                undo_mgr.cancel_undo(_delete_vapp)
+                self._vcloud_client.delete_vapp(clone_vapp_name)
+
+            LOG.info('end time of copy_volume_to_image is %s' %
+                  (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        except Exception as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error('copy_volume_to_image failed,reason %s' % e)
 
     @RetryDecorator(max_retry_count=CONF.vcloud.vcloud_api_retry_count,
                     exceptions=(sshclient.SSHError,
@@ -860,10 +951,6 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             "%Y-%m-%d %H:%M:%S", time.localtime())))
 
         image_meta = image_service.show(context, image_id)
-        LOG.debug('Copying image %(image_name)s to volume %(volume_name)s.',
-                  {'volume_name': volume['display_name'],
-                   'image_name': image_meta.get('name')})
-
         container_format = image_meta.get('container_format')
         if container_format in VGW_URLS:
             disk_ref, vapp_name = self._attach_volume_to_vgw(volume)
@@ -874,13 +961,11 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             try:
                 # use ssh client connect to vgw_host and
                 # copy image file to volume
-                LOG.error('begin time of _copy_file_to_volume_from_vgw is %s' %
-                          (time.strftime("%Y-%m-%d %H:%M:%S",
-                                         time.localtime())))
+                LOG.debug('begin time of _copy_file_to_volume_from_vgw is %s' %
+                          (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
                 self._copy_file_to_volume_from_vgw(image_id)
-                LOG.error('end time of _copy_file_to_volume_from_vgw is %s' %
-                          (time.strftime("%Y-%m-%d %H:%M:%S",
-                                         time.localtime())))
+                LOG.debug('end time of _copy_file_to_volume_from_vgw is %s' %
+                          (time.strftime("%Y-%m-%d %H:%M:%S",time.localtime())))
             finally:
                 # detach volume from vgw and
                 self._vcloud_client.detach_disk_from_vm(vapp_name, disk_ref)
@@ -890,11 +975,6 @@ class VCloudVolumeDriver(driver.VolumeDriver):
         elif container_format == constants.HYBRID_VM:
             #if container formate eq hybrivm, doing nothing
             pass
-
-        LOG.debug('Finished copy image %(image_name)s '
-                 'to volume %(volume_name)s.',
-                 {'volume_name': volume['display_name'],
-                  'image_name': image_meta.get('name')})
         LOG.info('end time of copy_image_to_volume is %s' % (time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime())))
 
