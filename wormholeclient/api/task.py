@@ -11,9 +11,9 @@ class TaskApiMixin(object):
              }
         """
         params = {'t': timeout}
-        if task is dict:
-            task_id = task.get('task_id', task.get('id'))
-        url = self._url("/tasks/%s" % task_id)
+        if type(task) is dict:
+            task = task.get('task_id', task.get('id'))
+        url = self._url("/tasks/%s" % task)
         task_query =  self._result(self._get(url, params=params), True)
         return task_query
 

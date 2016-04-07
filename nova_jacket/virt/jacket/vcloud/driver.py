@@ -17,7 +17,6 @@ A connection to the VMware vCloud platform.
 """
 
 import os
-import copy
 import time
 import shutil
 import urllib2
@@ -544,20 +543,16 @@ class VCloudDriver(driver.ComputeDriver):
             if is_hybrid_vm:
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
-
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                LOG.debug("vapp %s(ip %s) hybrid service has been up", vapp_name, vapp_ip)
 
-                LOG.info("To inject file %s for instance %s", CONF.vcloud.dst_path, vapp_name)
+                LOG.info("To inject file %s for vapp %s", CONF.vcloud.dst_path, vapp_name)
                 file_data = 'rabbit_userid=%s\nrabbit_password=%s\nrabbit_host=%s\n' % (CONF.rabbit_userid, CONF.rabbit_password, rabbit_host)
                 file_data += 'host=%s\ntunnel_cidr=%s\nroute_gw=%s\n' % (instance.uuid,CONF.vcloud.tunnel_cidr,CONF.vcloud.route_gw)
                 client.inject_file(CONF.vcloud.dst_path, file_data = file_data)
 
                 bdms = block_device_info.get('block_device_mapping')
                 root_device_name = block_device_info.get('root_device_name')
-
-                new_block_device_info = copy.deepcopy(block_device_info)
-                new_block_device_info['block_device_mapping'] = []
-                new_bdms = new_block_device_info['block_device_mapping']
 
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
@@ -585,9 +580,9 @@ class VCloudDriver(driver.ComputeDriver):
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
 
-                        new_bdm = copy.deepcopy(bdm)
-                        new_bdm['real_device'] = devs[0]
-                        new_bdms.append(new_bdm)
+                        volume = self._cinder_api.get(context, volume_id)
+                        bdm['real_device'] = devs[0]
+                        bdm['size'] = volume['size']
                     else:
                         msg = _('Unable to find volume %s to instance') % vcloud_volume_name
                         LOG.error(msg)
@@ -599,7 +594,7 @@ class VCloudDriver(driver.ComputeDriver):
                                         inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
-                                        block_device_info=new_block_device_info)
+                                        block_device_info=block_device_info)
                 while task['code'] == client_constants.TASK_DOING:
                     time.sleep(10)
                     task = client.query_task(task)
@@ -707,13 +702,8 @@ class VCloudDriver(driver.ComputeDriver):
 
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
-
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-                LOG.debug("vapp %s hybrid service has been up", vapp_name)
-
-                new_block_device_info = copy.deepcopy(block_device_info)
-                new_block_device_info['block_device_mapping'] = []
-                new_bdms = new_block_device_info['block_device_mapping']
+                LOG.debug("vapp %s(ip:%s) hybrid service has been up", vapp_name, vapp_ip)
 
                 for bdm in bdms:
                     mount_device = bdm['mount_device']
@@ -739,9 +729,10 @@ class VCloudDriver(driver.ComputeDriver):
                         ndevs = set(client.list_volume()['devices'])
                         devs = ndevs - odevs
 
-                        new_bdm = copy.deepcopy(bdm)
-                        new_bdm['real_device'] = devs[0]
-                        new_bdms.append(new_bdm)
+                        volume = self._cinder_api.get(context, volume_id)
+
+                        bdm['real_device'] = devs[0]
+                        bdm['size'] = volume['size']
                     else:
                         msg = _('Unable to find volume %s to instance') % vcloud_volume_name
                         LOG.error(msg)
@@ -760,7 +751,7 @@ class VCloudDriver(driver.ComputeDriver):
                                         inject_files=injected_files,
                                         admin_password=admin_password,
                                         network_info=network_info,
-                                        block_device_info=new_block_device_info)
+                                        block_device_info=block_device_info)
 
                 while task['code'] == client_constants.TASK_DOING:
                     time.sleep(10)
@@ -905,8 +896,17 @@ class VCloudDriver(driver.ComputeDriver):
         LOG.debug("get_console_pool_info")
 
     def get_console_output(self, context, instance):
-        LOG.debug("get_console_output")
-        return 'FAKE CONSOLE OUTPUT\nANOTHER\nLAST LINE'
+        try:
+            vapp_name = self._get_vcloud_vapp_name(instance)
+            if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM:
+                vapp_ip = self.get_vapp_ip(vapp_name)
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                response = client.get_console_output()
+                return response['logs']
+        except Exception as e:
+            with excutils.save_and_reraise_exception():
+                LOG.error('get_console_output failed,reason %s' % e)
 
     def get_vnc_console(self, context, instance):
         LOG.debug("get_vnc_console")
@@ -1212,49 +1212,50 @@ class VCloudDriver(driver.ComputeDriver):
         LOG.debug("image_id:%s update_task_state:%s", image_id, update_task_state)
 
         try:
-            base_image_ref = instance['image_ref']
-            base = compute_utils.get_image_metadata(context, self._image_api, base_image_ref, instance)
+            if instance.system_metadata.get('image_container_format') == constants.HYBRID_VM:
+                base_image_ref = instance['image_ref']
+                base = compute_utils.get_image_metadata(context, self._image_api, base_image_ref, instance)
 
-            snapshot = self._image_api.get(context, image_id)
-            metadata = self._create_snapshot_metadata(base,
-                                                      instance,
-                                                      snapshot['disk_format'],
-                                                      snapshot['name'])
+                snapshot = self._image_api.get(context, image_id)
+                metadata = self._create_snapshot_metadata(base,
+                                                          instance,
+                                                          snapshot['disk_format'],
+                                                          snapshot['name'])
 
-            update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
+                update_task_state(task_state=task_states.IMAGE_PENDING_UPLOAD)
 
-            vapp_name = self._get_vcloud_vapp_name(instance)
-            vapp_ip = self.get_vapp_ip(vapp_name)
-            client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
-            self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                vapp_name = self._get_vcloud_vapp_name(instance)
+                vapp_ip = self.get_vapp_ip(vapp_name)
+                client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
+                LOG.debug("vapp %s(ip: %s) hybrid service has been up", vapp_name, vapp_ip)
 
-            LOG.debug('begin time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-            task = client.create_image(snapshot['name'], image_id)
-            while task['code'] == client_constants.TASK_DOING:
-                time.sleep(30)
-                task = client.query_task(task)
+                LOG.debug('begin time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                task = client.create_image(snapshot['name'], image_id)
+                while task['code'] == client_constants.TASK_DOING:
+                    time.sleep(10)
+                    task = client.query_task(task)
 
-            if task['code'] != client_constants.TASK_SUCCESS:
-                LOG.error(task['message'])
-                raise exception.NovaException(task['message'])
-            else:
-                LOG.debug('end time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+                if task['code'] != client_constants.TASK_SUCCESS:
+                    LOG.error(task['message'])
+                    raise exception.NovaException(task['message'])
+                else:
+                    LOG.debug('end time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
-            image_info = client.image_info(snapshot['name'], image_id)
-            if not image_info:
-                LOG.error('cannot get image info')
-                raise exception.NovaException('cannot get image info')
+                image_info = client.image_info(snapshot['name'], image_id)
+                if not image_info:
+                    LOG.error('cannot get image info')
+                    raise exception.NovaException('cannot get image info')
 
-            update_task_state(task_state=task_states.IMAGE_UPLOADING,
-                              expected_state=task_states.IMAGE_PENDING_UPLOAD)
+                update_task_state(task_state=task_states.IMAGE_UPLOADING,
+                                  expected_state=task_states.IMAGE_PENDING_UPLOAD)
 
-            with image_utils.temporary_file() as tmp:
-                image_service, image_id = glance.get_remote_image_service(context, image_id)
-                with fileutils.file_open(tmp, 'wb+') as f:
-                    f.truncate(image_info['size'])
-                    image_service.update(context, image_id, metadata, f)
-                    self._update_vm_task_state(instance, task_state=instance.task_state)
-
+                with image_utils.temporary_file() as tmp:
+                    image_service, image_id = glance.get_remote_image_service(context, image_id)
+                    with fileutils.file_open(tmp, 'wb+') as f:
+                        f.truncate(image_info['size'])
+                        image_service.update(context, image_id, metadata, f)
+                        self._update_vm_task_state(instance, task_state=instance.task_state)
         except Exception as e:
             with excutils.save_and_reraise_exception():
                 LOG.error('snapshot failed,reason %s' % e)
