@@ -132,7 +132,7 @@ class ContainerApiMixin(object):
                      }
 
         """
-        url = self._url("/container/image-info?image_id={}&image_name={}", image_id, image_name)
+        url = self._url("/container/image-info?image_id=%s&image_name=%s"%(image_id, image_name))
         image_info = self._result(self._get(url), True)
         return image_info
 

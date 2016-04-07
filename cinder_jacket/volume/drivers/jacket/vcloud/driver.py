@@ -447,7 +447,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             vapp_ip = self.get_vapp_ip(clone_vapp_name)
             client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
             self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-            LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
+            LOG.debug("vapp %s(ip: %s) hybrid service has been up", clone_vapp_name, vapp_ip)
 
             odevs = set(client.list_volume()['devices'])
             if self._vcloud_client.attach_disk_to_vm(clone_vapp_name, source_disk_ref):
@@ -869,12 +869,12 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                 vapp_ip = self.get_vapp_ip(clone_vapp_name)
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
-                LOG.debug("vapp %s hybrid service has been up", clone_vapp_name)
+                LOG.debug("vapp %s(ip: %s) hybrid service has been up", clone_vapp_name, vapp_ip)
 
                 LOG.debug('begin time of create image is %s', time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
                 task = client.create_image(image_meta['name'], image_meta['id'])
                 while task['code'] == client_constants.TASK_DOING:
-                    time.sleep(30)
+                    time.sleep(10)
                     task = client.query_task(task)
 
                 if task['code'] != client_constants.TASK_SUCCESS:
@@ -897,11 +897,11 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                                                   tmp,
                                                   volume_format=image_meta['disk_format'])
 
-
                 undo_mgr.cancel_undo(_power_off_vapp)
                 self._vcloud_client.power_off_vapp(clone_vapp_name)
 
                 attached_disk_names.remove(vcloud_volume_name)
+                self._vcloud_client.detach_disk_from_vm(clone_vapp_name, disk_ref)
 
                 undo_mgr.cancel_undo(_delete_vapp)
                 self._vcloud_client.delete_vapp(clone_vapp_name)
@@ -909,8 +909,9 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             LOG.info('end time of copy_volume_to_image is %s' %
                   (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
         except Exception as e:
-            with excutils.save_and_reraise_exception():
-                LOG.error('copy_volume_to_image failed,reason %s' % e)
+            msg = _("Failed to copy volume to image reason %s, rolling back") % e
+            LOG.error(msg)
+            undo_mgr.rollback_and_reraise(msg=msg)
 
     @RetryDecorator(max_retry_count=CONF.vcloud.vcloud_api_retry_count,
                     exceptions=(sshclient.SSHError,
