@@ -512,10 +512,13 @@ class VCloudVolumeDriver(driver.VolumeDriver):
 
             created_volumes.remove(local_disk_name)
             self._vcloud_client.delete_volume(local_disk_name)
+
+            return True
         except Exception as e:
             msg = _("Failed to copy volume to volume reason %s, rolling back") % e
             LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg)
+            return False
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Create a volume from a snapshot."""
@@ -580,15 +583,17 @@ class VCloudVolumeDriver(driver.VolumeDriver):
         snapshot_name = snapshot['display_name']
         vcloud_dest_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
 
-        self._copy_volume_to_volume(vcloud_dest_volume_name,
+        result = self._copy_volume_to_volume(vcloud_dest_volume_name,
                                     snapshot['volume_size'],
                                     snapshot['id'],
                                     vcloud_source_volume_name,
                                     snapshot['volume_size'],
                                     snapshot['volume_id'],
                                     source_attached = source_attached)
-
-        LOG.debug('create snapshot successful')
+        if result:
+            LOG.debug('create snapshot successful')
+        else:
+            LOG.debug('create snapshot failed')
 
     def delete_snapshot(self, snapshot):
         """Delete a snapshot."""
