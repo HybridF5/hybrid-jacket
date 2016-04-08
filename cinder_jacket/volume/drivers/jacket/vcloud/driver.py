@@ -531,14 +531,16 @@ class VCloudVolumeDriver(driver.VolumeDriver):
         snapshot_name = snapshot['display_name']
         vcloud_snapshot_volume_name = self._get_vcloud_volume_name(snapshot['id'], snapshot_name)
 
-        self._copy_volume_to_volume(vcloud_volume_name,
+        result = self._copy_volume_to_volume(vcloud_volume_name,
                                 volume['size'],
                                 volume['id'],
                                 vcloud_snapshot_volume_name,
                                 snapshot['volume_size'],
                                 snapshot['id'])
-
-        LOG.debug('create volume from snapshot successful')
+        if result:
+            LOG.debug('create volume from snapshot successful')
+        else:
+            LOG.debug('create volume from snapshot failed')
 
     def create_cloned_volume(self, volume, src_vref):
         """Create a clone of the specified volume."""
@@ -555,13 +557,18 @@ class VCloudVolumeDriver(driver.VolumeDriver):
         else:
             source_attached = False
 
-        self._copy_volume_to_volume(vcloud_dest_volume_name,
+        result = self._copy_volume_to_volume(vcloud_dest_volume_name,
                                 volume['size'],
                                 volume['id'],
                                 vcloud_source_volume_name,
                                 src_vref['size'],
                                 src_vref['id'],
                                 source_attached = source_attached)
+        if result:
+            LOG.debug('create cloned volume successful')
+        else:
+            LOG.debug('create cloned volume failed')
+
 
     def extend_volume(self, volume, new_size):
         """Extend a volume."""
@@ -1000,7 +1007,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             backup_name = backup['display_name']
             vcloud_backup_volume_name = self._get_vcloud_volume_name(backup['id'], backup_name)
 
-            self._copy_volume_to_volume(vcloud_backup_volume_name, 
+            result = self._copy_volume_to_volume(vcloud_backup_volume_name, 
                                         backup['size'],
                                         backup['id'],
                                         vcloud_volume_name, 
@@ -1008,7 +1015,10 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                                         volume['id'],
                                         source_attached = source_attached)
 
-            LOG.debug("backup volume successful")
+            if result:
+                LOG.debug("backup volume successful")
+            else:
+                LOG.debug("backup volume failed")
         else:
             super(VCloudVolumeDriver, self).backup_volume(context, backup, backup_service)
 
@@ -1027,7 +1037,7 @@ class VCloudVolumeDriver(driver.VolumeDriver):
             else:
                 dest_attached = False
 
-            self._copy_volume_to_volume(vcloud_volume_name, 
+            result = self._copy_volume_to_volume(vcloud_volume_name, 
                                         volume['size'],
                                         volume['id'],
                                         vcloud_backup_volume_name, 
@@ -1035,7 +1045,10 @@ class VCloudVolumeDriver(driver.VolumeDriver):
                                         backup['id'],
                                         created = True,
                                         dest_attached = dest_attached)
-            LOG.debug("restore backup successful")
+            if result:
+                LOG.debug("restore backup successful")
+            else:
+                LOG.debug("restore backup failed")
         else:
             super(VCloudVolumeDriver, self).restore_backup(context, backup, volume, backup_service)
 
