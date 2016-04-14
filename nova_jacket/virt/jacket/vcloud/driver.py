@@ -889,6 +889,7 @@ class VCloudDriver(driver.ComputeDriver):
             else:
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, port = CONF.vcloud.hybrid_service_port)
+                self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
                 client.restart_container(network_info=network_info, block_device_info=block_device_info)
         except Exception as e:
             with excutils.save_and_reraise_exception():
