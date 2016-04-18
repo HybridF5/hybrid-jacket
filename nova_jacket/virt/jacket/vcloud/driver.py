@@ -906,7 +906,7 @@ class VCloudDriver(driver.ComputeDriver):
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
                 response = client.get_console_output()
-                if not response['logs']:
+                if response['logs']:
                     return response['logs']
                 else:
                     return 'console output empty'
