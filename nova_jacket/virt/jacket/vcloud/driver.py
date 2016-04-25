@@ -606,7 +606,7 @@ class VCloudDriver(driver.ComputeDriver):
             self._binding_host(context, network_info, instance.uuid)
             self.instances[instance.uuid] = instance
         except Exception as e:
-            msg = _("Failed to spawn reason %s, rolling back") % e
+            msg = _("Failed to spawn vapp %s reason %s, rolling back") % (vapp_name, e)
             LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg, instance=instance)
 
@@ -771,7 +771,7 @@ class VCloudDriver(driver.ComputeDriver):
                 LOG.error(msg)
                 raise exception.NovaException(msg)
         except Exception as e:
-            msg = _("Failed to spawn reason %s, rolling back") % e
+            msg = _("Failed to spawn vapp %s reason %s, rolling back") % (vapp_name, e)
             LOG.error(msg)
             undo_mgr.rollback_and_reraise(msg=msg, instance=instance)
 
@@ -783,7 +783,7 @@ class VCloudDriver(driver.ComputeDriver):
         LOG.debug(_("network_info is %s") % network_info)
         LOG.debug(_("block_device_info is %s") % block_device_info)
 
-        LOG.info('begin time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        LOG.info('begin time of vcloud create vm %s is %s' % (instance.display_name, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
 
         if not instance.image_ref:
             self._spawn_from_volume(context, instance, image_meta, injected_files,
@@ -791,7 +791,7 @@ class VCloudDriver(driver.ComputeDriver):
         else:
             self._spawn_from_image(context, instance, image_meta, injected_files,
                                     admin_password, network_info, block_device_info)
-        LOG.info('end time of vcloud create vm is %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        LOG.info('end time of vcloud create vm %s is %s' % (instance.display_name, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
 
     def _update_instance_progress(self, context, instance, step, total_steps):
         """Update instance progress percent to reflect current step number
@@ -1303,10 +1303,6 @@ class VCloudDriver(driver.ComputeDriver):
         except Exception as e:
             with excutils.save_and_reraise_exception():
                 LOG.error('unpause failed,reason %s' % e)
-
-    def suspend(self, instance):
-        LOG.debug("suspend")
-
     def resume(self, context, instance, network_info, block_device_info=None):
         LOG.debug("resume")
 
