@@ -1333,16 +1333,16 @@ class VCloudDriver(driver.ComputeDriver):
                 vapp_ip = self.get_vapp_ip(vapp_name)
                 client = Client(vapp_ip, CONF.vcloud.hybrid_service_port)
                 client.stop_container()
-                LOG.debug("stop container sucessful for instance %s" % instance.uuid)
+                LOG.debug("stop container sucessful for instance %s" % instance.display_name)
 
             self._vcloud_client.power_off_vapp(vapp_name)
         except Exception as e:
-            msg = 'power off instanc %s failed, reason %s' % (instance.uuid, e)
+            msg = 'power off instanc %s failed, reason %s' % (instance.display_name, e)
             LOG.error(msg)
             raise exception.NovaException(msg)
 
     def power_on(self, context, instance, network_info, block_device_info):
-        LOG.debug('begin power on instance: %s' % instance.uuid)
+        LOG.debug('begin power on instance: %s' % instance.display_name)
 
         try:
             vapp_name = self._get_vcloud_vapp_name(instance)
@@ -1354,7 +1354,7 @@ class VCloudDriver(driver.ComputeDriver):
                 self._wait_hybrid_service_up(vapp_ip, CONF.vcloud.hybrid_service_port)
                 client.start_container(network_info = network_info, block_device_info = block_device_info)
         except Exception as e:
-            msg = 'power on instance %s failed, reason %s' % (instance.uuid, e)
+            msg = 'power on instance %s failed, reason %s' % (instance.display_name, e)
             LOG.error(msg)
             raise exception.NovaException(msg)
 
