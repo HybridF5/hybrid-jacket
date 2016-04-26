@@ -1258,7 +1258,7 @@ class VCloudDriver(driver.ComputeDriver):
                         self._update_vm_task_state(instance, task_state=instance.task_state)
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                LOG.error('snapshot failed,reason %s' % e)
+                LOG.error('snapshot instance %s failed,reason %s' % (instance.display_name, e))
 
     def post_interrupted_snapshot_cleanup(self, context, instance):
         """Cleans up any resources left after an interrupted snapshot.
@@ -1290,7 +1290,7 @@ class VCloudDriver(driver.ComputeDriver):
                 client.pause_container()
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                LOG.error('pause failed,reason %s' % e)
+                LOG.error('pause vapp %s failed,reason %s' % (vapp_name, e))
 
     def unpause(self, instance):
         try:
@@ -1302,7 +1302,8 @@ class VCloudDriver(driver.ComputeDriver):
                 client.unpause_container()
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                LOG.error('unpause failed,reason %s' % e)
+                LOG.error('unpause vapp %s failed,reason %s' % (vapp_name, e))
+
     def resume(self, context, instance, network_info, block_device_info=None):
         LOG.debug("resume")
 
