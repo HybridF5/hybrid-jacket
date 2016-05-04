@@ -527,7 +527,7 @@ class VCloudDriver(driver.ComputeDriver):
                 if result:
                     self._vcloud_client.attach_disk_to_vm(vapp_name, disk_ref)
                 else:
-                    msg = _('Unable to find volume %s to instance') % disk_name
+                    msg = _('Unable to find volume %s to vapp %s') % (disk_name, vapp_name)
                     LOG.error(msg)
                     raise exception.NovaException(msg)
 
@@ -694,7 +694,7 @@ class VCloudDriver(driver.ComputeDriver):
                     attached_disk_names.append(vcloud_volume_name)
                     undo_mgr.undo_with(_detach_disks_to_vm)
                 else:
-                    msg = _('Unable to find volume %s to instance')% vcloud_volume_name
+                    msg = _('Unable to find volume %s to vapp %s')% (vcloud_volume_name, vapp_name)
                     LOG.error(msg)
                     raise exception.NovaException(msg)
 
